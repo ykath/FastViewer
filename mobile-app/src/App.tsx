@@ -12,6 +12,7 @@ import {
   ImageDown,
   ImageOff,
   ListTree,
+  Loader2,
   Menu,
   Moon,
   Search,
@@ -21,23 +22,47 @@ import {
   SlidersHorizontal,
   Star,
   Sun,
+  Type,
   Upload,
   X,
 } from 'lucide-react'
-import { createElement, useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import React, { createElement, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import ReactMarkdown from 'react-markdown'
 import type { Components } from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import rehypeHighlight from 'rehype-highlight'
 import { Capacitor, registerPlugin } from '@capacitor/core'
 import type { PluginListenerHandle } from '@capacitor/core'
+import { Share } from '@capacitor/share'
+import { Filesystem, Directory, Encoding } from '@capacitor/filesystem'
+import html2canvas from 'html2canvas-pro'
+import { detectAndDecode, decodeWithEncoding, base64ToBytes, ENCODING_OPTIONS } from './encoding'
+import type { EncodingLabel } from './encoding'
 import './App.css'
 
-type View = 'home' | 'reader' | 'settings' | 'error'
+type View = 'home' | 'reader' | 'settings' | 'error' | 'loading'
 type HomeTab = 'recent' | 'favorite' | 'library'
 type DocumentType = 'markdown' | 'html' | 'text'
 type ThemeMode = 'light' | 'dark'
 type ReaderMode = 'rendered' | 'source'
+
+type FileOpenErrorCode =
+  | 'PERMISSION_EXPIRED'
+  | 'FILE_NOT_FOUND'
+  | 'UNSUPPORTED_TYPE'
+  | 'ENCODING_FAILED'
+  | 'FILE_TOO_LARGE'
+  | 'RENDER_FAILED'
+  | 'UNKNOWN'
+
+type FileOpenError = {
+  code: FileOpenErrorCode
+  message: string
+}
+
+const FILE_SIZE_WARNING = 5 * 1024 * 1024
+const FILE_SIZE_DANGER = 10 * 1024 * 1024
+const FILE_SIZE_RAW_LIMIT = 2 * 1024 * 1024
 
 type DocumentRecord = {
   id: string
@@ -48,6 +73,7 @@ type DocumentRecord = {
   sourceType: string
   sourceUri?: string
   content: string
+  rawBase64?: string
   encoding: string
   lastOpenedAt: string
   createdAt: string
@@ -73,9 +99,11 @@ type ExternalFileResult = {
   uri?: string
   fileName?: string
   mimeType?: string
+  base64Content?: string
   content?: string
   size?: number
   error?: string
+  errorCode?: string
 }
 
 type ExternalResource = {
@@ -172,9 +200,10 @@ function App() {
   const [activeTab, setActiveTab] = useState<HomeTab>('recent')
   const [documents, setDocuments] = usePersistentDocuments()
   const [activeDocumentId, setActiveDocumentId] = useState(documents[0]?.id ?? '')
-  const [errorMessage, setErrorMessage] = useState('')
+  const [fileError, setFileError] = useState<FileOpenError | null>(null)
   const [toast, setToast] = useState<ToastState | null>(null)
   const [settings, setSettings] = usePersistentSettings()
+  const [largeSizeConfirm, setLargeSizeConfirm] = useState<{ resolve: (v: boolean) => void; size: number } | null>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
 
   const activeDocument = documents.find((doc) => doc.id === activeDocumentId) ?? documents[0]
@@ -192,6 +221,11 @@ function App() {
   const showToast = (message: string, tone: ToastState['tone'] = 'normal') => {
     setToast({ message, tone })
     window.setTimeout(() => setToast(null), 2200)
+  }
+
+  const showError = (code: FileOpenErrorCode, message: string) => {
+    setFileError({ code, message })
+    setView('error')
   }
 
   const persistDocuments = (updater: (items: DocumentRecord[]) => DocumentRecord[]) => {
@@ -218,25 +252,97 @@ function App() {
     }
   }
 
-  const importExternalResult = (result: ExternalFileResult) => {
-    if (result.error) {
-      setErrorMessage(result.error)
-      setView('error')
-      return
+  const checkFileSizeAndConfirm = async (size: number): Promise<'open' | 'source' | 'cancel'> => {
+    if (size > 0 && size >= FILE_SIZE_DANGER) {
+      return new Promise((resolve) => {
+        setLargeSizeConfirm({
+          resolve: (confirmed) => {
+            setLargeSizeConfirm(null)
+            resolve(confirmed ? 'open' : 'cancel')
+          },
+          size,
+        })
+      })
     }
+    if (size > 0 && size >= FILE_SIZE_WARNING) {
+      showToast(`文件较大（${formatBytes(size)}），渲染可能较慢`, 'warning')
+    }
+    return 'open'
+  }
 
-    if (!result.hasFile || !result.content || !result.fileName) return
+  const processBytes = (bytes: Uint8Array, fileName: string, sourceType: string, sourceUri?: string, fileSize?: number) => {
+    const result = detectAndDecode(bytes)
+    const rawBase64 = bytes.length <= FILE_SIZE_RAW_LIMIT
+      ? btoa(String.fromCharCode(...bytes))
+      : undefined
 
-    const record = createRecordFromContent({
-      fileName: result.fileName,
+    const record = createRecordFromBytes({
+      fileName,
       content: result.content,
-      sourceType: '外部应用',
-      sourceUri: result.uri,
-      fileSize: result.size,
+      encoding: result.encoding,
+      rawBase64,
+      sourceType,
+      sourceUri,
+      fileSize: fileSize ?? bytes.length,
     })
 
     importDocument(record)
-    showToast(record.fileType === 'html' ? '已安全打开 HTML 文件' : '已从外部应用打开文件', 'success')
+
+    if (result.confidence === 'low') {
+      showToast('编码识别置信度较低，可在编码设置中切换', 'warning')
+    }
+
+    const displayType = record.fileType === 'html' ? '已安全打开 HTML 文件' : '文件已打开'
+    showToast(displayType, 'success')
+  }
+
+  const importExternalResult = async (result: ExternalFileResult) => {
+    if (result.error || result.errorCode) {
+      const code = (result.errorCode as FileOpenErrorCode) || 'UNKNOWN'
+      showError(code, result.error || '外部文件读取失败')
+      return
+    }
+
+    if (!result.hasFile) return
+
+    // Backwards compat: if native sent base64Content, use new pipeline
+    if (result.base64Content && result.fileName) {
+      const size = result.size ?? 0
+
+      if (size > 0 && size >= FILE_SIZE_DANGER) {
+        setView('loading')
+        const action = await checkFileSizeAndConfirm(size)
+        if (action === 'cancel') {
+          setView('home')
+          return
+        }
+      } else if (size > 0 && size >= FILE_SIZE_WARNING) {
+        showToast(`文件较大（${formatBytes(size)}），渲染可能较慢`, 'warning')
+      }
+
+      setView('loading')
+      try {
+        const bytes = base64ToBytes(result.base64Content)
+        processBytes(bytes, result.fileName, '外部应用', result.uri, result.size)
+      } catch {
+        showError('UNKNOWN', '文件解码失败，请尝试重新打开。')
+      }
+      return
+    }
+
+    // Legacy fallback: old native sent content as string
+    if (result.content && result.fileName) {
+      const record = createRecordFromBytes({
+        fileName: result.fileName,
+        content: result.content,
+        encoding: 'utf-8',
+        sourceType: '外部应用',
+        sourceUri: result.uri,
+        fileSize: result.size,
+      })
+      importDocument(record)
+      showToast('已从外部应用打开文件', 'success')
+    }
   }
 
   const loadExternalLaunchFile = async () => {
@@ -244,16 +350,14 @@ function App() {
 
     try {
       const result = await FastViewerFiles.getLaunchFile()
-      importExternalResult(result)
+      await importExternalResult(result)
     } catch (error) {
-      setErrorMessage(error instanceof Error ? error.message : '外部文件读取失败')
-      setView('error')
+      showError('UNKNOWN', error instanceof Error ? error.message : '外部文件读取失败')
     }
   }
 
   useEffect(() => {
     void loadExternalLaunchFile()
-    // Only run once on app boot to consume the native launch intent.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
@@ -262,7 +366,7 @@ function App() {
 
     let handle: PluginListenerHandle | undefined
     void FastViewerFiles.addListener('fileOpen', (result) => {
-      importExternalResult(result)
+      void importExternalResult(result)
     }).then((listenerHandle) => {
       handle = listenerHandle
     })
@@ -270,25 +374,30 @@ function App() {
     return () => {
       void handle?.remove()
     }
-    // Listener should stay attached for the app lifetime; callbacks use current state through React rerenders.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
   const handlePickedFile = async (file: File) => {
     try {
-      const content = await file.text()
-      const record = createRecordFromContent({
-        fileName: file.name,
-        content,
-        sourceType: '文件选择器',
-        fileSize: file.size,
-      })
+      const size = file.size
+      if (size >= FILE_SIZE_DANGER) {
+        setView('loading')
+        const action = await checkFileSizeAndConfirm(size)
+        if (action === 'cancel') {
+          setView('home')
+          if (fileInputRef.current) fileInputRef.current.value = ''
+          return
+        }
+      } else if (size >= FILE_SIZE_WARNING) {
+        showToast(`文件较大（${formatBytes(size)}），渲染可能较慢`, 'warning')
+      }
 
-      importDocument(record)
-      showToast('文件已打开', 'success')
+      setView('loading')
+      const buffer = await file.arrayBuffer()
+      const bytes = new Uint8Array(buffer)
+      processBytes(bytes, file.name, '文件选择器', undefined, file.size)
     } catch {
-      setErrorMessage('文件读取失败，请确认文件仍可访问。')
-      setView('error')
+      showError('UNKNOWN', '文件读取失败，请确认文件仍可访问。')
     } finally {
       if (fileInputRef.current) {
         fileInputRef.current.value = ''
@@ -363,11 +472,13 @@ function App() {
 
         {view === 'error' && (
           <OpenErrorState
-            message={errorMessage}
+            error={fileError}
             onBack={() => setView('home')}
             onPickFile={() => fileInputRef.current?.click()}
           />
         )}
+
+        {view === 'loading' && <LoadingState />}
       </main>
 
       <BottomNav
@@ -375,9 +486,31 @@ function App() {
         hasReader={Boolean(activeDocument)}
         onNavigate={(nextView) => {
           if (nextView === 'reader' && !activeDocument) return
+          if (nextView === 'loading') return
           setView(nextView)
         }}
       />
+
+      {largeSizeConfirm && (
+        <div className="sheet-backdrop" role="presentation">
+          <section className="sheet" role="dialog" aria-modal="true">
+            <header className="sheet-header">
+              <h2>文件较大</h2>
+            </header>
+            <p className="large-file-warning">
+              文件大小为 {formatBytes(largeSizeConfirm.size)}，渲染可能较慢甚至卡顿。
+            </p>
+            <div className="error-actions">
+              <button className="primary-action compact" type="button" onClick={() => largeSizeConfirm.resolve(true)}>
+                继续打开
+              </button>
+              <button className="secondary-action compact" type="button" onClick={() => largeSizeConfirm.resolve(false)}>
+                取消
+              </button>
+            </div>
+          </section>
+        </div>
+      )}
 
       {toast && (
         <div className={`toast ${toast.tone ?? 'normal'}`} role="status">
@@ -535,7 +668,9 @@ function ReaderPage({
   const [searchCount, setSearchCount] = useState(0)
   const [tocOpen, setTocOpen] = useState(false)
   const [menuOpen, setMenuOpen] = useState(false)
+  const [encodingOpen, setEncodingOpen] = useState(false)
   const [readerMode, setReaderMode] = useState<ReaderMode>('rendered')
+  const [renderFailed, setRenderFailed] = useState(false)
   const [allowExternalOnce, setAllowExternalOnce] = useState(false)
   const [htmlFrameVersion, setHtmlFrameVersion] = useState(0)
   const contentRef = useRef<HTMLElement | null>(null)
@@ -544,10 +679,14 @@ function ReaderPage({
 
   const allowExternalResources = document.fileType === 'html' && (allowExternalOnce || Boolean(document.trustedHtml))
   const htmlInfo = useMemo(
-    () =>
-      document.fileType === 'html'
-        ? buildSafeHtmlDocument(document.content, { allowExternalResources })
-        : null,
+    () => {
+      if (document.fileType !== 'html') return null
+      try {
+        return buildSafeHtmlDocument(document.content, { allowExternalResources })
+      } catch {
+        return null
+      }
+    },
     [allowExternalResources, document.content, document.fileType],
   )
   const headings = useMemo(
@@ -561,7 +700,9 @@ function ReaderPage({
     setSearchOpen(false)
     setSearchIndex(0)
     setReaderMode('rendered')
+    setRenderFailed(false)
     setAllowExternalOnce(false)
+    setEncodingOpen(false)
     window.setTimeout(() => {
       scrollRef.current?.scrollTo({ top: document.lastReadPosition })
     }, 0)
@@ -616,18 +757,188 @@ function ReaderPage({
     onShowToast('已保存到文件库', 'success')
   }
 
-  const copyText = async (source = document.fileType === 'html' ? htmlInfo?.plainText ?? document.content : document.content) => {
+  const copyText = async () => {
+    const source = readerMode === 'source'
+      ? document.content
+      : document.fileType === 'html'
+        ? htmlInfo?.plainText ?? document.content
+        : document.content
     try {
       await navigator.clipboard.writeText(source)
       onShowToast('已复制全文', 'success')
     } catch {
-      onShowToast('复制失败，请检查系统权限', 'warning')
+      try {
+        const ta = window.document.createElement('textarea')
+        ta.value = source
+        ta.style.position = 'fixed'
+        ta.style.left = '-9999px'
+        window.document.body.appendChild(ta)
+        ta.select()
+        window.document.execCommand('copy')
+        window.document.body.removeChild(ta)
+        onShowToast('已复制全文', 'success')
+      } catch {
+        onShowToast('复制失败，请检查系统权限', 'warning')
+      }
     }
   }
 
   const nextSearchResult = (delta: number) => {
     if (searchCount === 0) return
     setSearchIndex((current) => (current + delta + searchCount) % searchCount)
+  }
+
+  const switchEncoding = (encoding: EncodingLabel) => {
+    if (!document.rawBase64) {
+      onShowToast('文件过大，无法切换编码，请重新打开文件', 'warning')
+      setEncodingOpen(false)
+      return
+    }
+    try {
+      const bytes = base64ToBytes(document.rawBase64)
+      const content = decodeWithEncoding(bytes, encoding)
+      onUpdate({ content, encoding: encoding.toUpperCase() })
+      setRenderFailed(false)
+      onShowToast(`已切换为 ${encoding.toUpperCase()}`, 'success')
+    } catch {
+      onShowToast('编码切换失败', 'warning')
+    }
+    setEncodingOpen(false)
+  }
+
+  const [exporting, setExporting] = useState(false)
+
+  const shareOriginalFile = async () => {
+    if (exporting) return
+    setExporting(true)
+    setMenuOpen(false)
+    try {
+      if (!Capacitor.isNativePlatform()) {
+        const blob = new Blob([document.content], { type: 'text/plain;charset=utf-8' })
+        const a = window.document.createElement('a')
+        a.href = URL.createObjectURL(blob)
+        a.download = document.fileName
+        a.click()
+        URL.revokeObjectURL(a.href)
+        onShowToast('已下载文件', 'success')
+        return
+      }
+
+      const path = `share/${document.fileName}`
+      if (document.rawBase64) {
+        await Filesystem.writeFile({ path, data: document.rawBase64, directory: Directory.Cache, recursive: true })
+      } else {
+        await Filesystem.writeFile({ path, data: document.content, directory: Directory.Cache, encoding: Encoding.UTF8, recursive: true })
+      }
+
+      const { uri } = await Filesystem.getUri({ path, directory: Directory.Cache })
+      await Share.share({ title: document.fileName, url: uri, dialogTitle: '分享文件' })
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : '未知错误'
+      if (!msg.includes('cancel') && !msg.includes('dismiss')) {
+        onShowToast(`分享失败：${msg}`, 'warning')
+      }
+    } finally {
+      setExporting(false)
+    }
+  }
+
+  const exportPdf = async () => {
+    if (exporting) return
+    setExporting(true)
+    setMenuOpen(false)
+    try {
+      let printHtml: string
+      if (document.fileType === 'html' && htmlInfo) {
+        printHtml = htmlInfo.srcDoc.replace('</head>', `${PRINT_CSS}</head>`)
+      } else {
+        const rendered = contentRef.current?.innerHTML ?? `<pre>${escapeHtml(document.content)}</pre>`
+        printHtml = buildPrintDocument(document.fileName, rendered, settings)
+      }
+
+      const printFrame = window.document.createElement('iframe')
+      printFrame.style.cssText = 'position:fixed;left:-9999px;width:800px;height:600px;'
+      window.document.body.appendChild(printFrame)
+
+      const frameDoc = printFrame.contentDocument ?? printFrame.contentWindow?.document
+      if (!frameDoc) throw new Error('无法创建打印窗口')
+
+      frameDoc.open()
+      frameDoc.write(printHtml)
+      frameDoc.close()
+
+      await new Promise<void>((resolve) => {
+        printFrame.onload = () => resolve()
+        setTimeout(resolve, 1500)
+      })
+
+      printFrame.contentWindow?.print()
+      setTimeout(() => printFrame.remove(), 3000)
+      onShowToast('已调起打印/PDF 导出', 'success')
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : '未知错误'
+      onShowToast(`PDF 导出失败：${msg}`, 'warning')
+    } finally {
+      setExporting(false)
+    }
+  }
+
+  const shareAsImage = async () => {
+    if (exporting) return
+    setExporting(true)
+    setMenuOpen(false)
+    try {
+      let targetElement: HTMLElement | null = null
+
+      if (document.fileType === 'html') {
+        const tempDiv = window.document.createElement('div')
+        tempDiv.style.cssText = 'position:absolute;left:-9999px;top:0;width:375px;'
+        tempDiv.innerHTML = htmlInfo?.srcDoc
+          ? new DOMParser().parseFromString(htmlInfo.srcDoc, 'text/html').body.innerHTML
+          : document.content
+        window.document.body.appendChild(tempDiv)
+        targetElement = tempDiv
+      } else {
+        targetElement = contentRef.current
+      }
+
+      if (!targetElement) throw new Error('无法获取内容区域')
+
+      const canvas = await html2canvas(targetElement, {
+        useCORS: true,
+        scale: 2,
+        backgroundColor: settings.themeMode === 'dark' ? '#171e1a' : '#fffdf8',
+        windowWidth: 375,
+      })
+
+      if (document.fileType === 'html' && targetElement.parentNode === window.document.body) {
+        targetElement.remove()
+      }
+
+      const dataUrl = canvas.toDataURL('image/png')
+      const base64Data = dataUrl.split(',')[1]
+
+      if (!Capacitor.isNativePlatform()) {
+        const a = window.document.createElement('a')
+        a.href = dataUrl
+        a.download = `${document.fileName.replace(/\.[^.]+$/, '')}.png`
+        a.click()
+        onShowToast('已下载图片', 'success')
+        return
+      }
+
+      const imgPath = `share/${document.fileName.replace(/\.[^.]+$/, '')}.png`
+      await Filesystem.writeFile({ path: imgPath, data: base64Data, directory: Directory.Cache, recursive: true })
+      const { uri } = await Filesystem.getUri({ path: imgPath, directory: Directory.Cache })
+      await Share.share({ title: `${document.fileName} 图片`, files: [uri], dialogTitle: '分享图片' })
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : '未知错误'
+      if (!msg.includes('cancel') && !msg.includes('dismiss')) {
+        onShowToast(`图片生成失败：${msg}`, 'warning')
+      }
+    } finally {
+      setExporting(false)
+    }
   }
 
   const statusText =
@@ -705,12 +1016,23 @@ function ReaderPage({
 
       <div className="reader-status">
         <span>{statusText}</span>
-        <span>{document.encoding}</span>
+        <button className="encoding-badge" type="button" onClick={() => setEncodingOpen(true)}>
+          {document.encoding}
+        </button>
         <span>本地处理</span>
       </div>
 
-      {readerMode === 'source' ? (
-        <pre className="source-view">{document.content}</pre>
+      {readerMode === 'source' || renderFailed ? (
+        <div>
+          {renderFailed && (
+            <div className="render-fallback-notice">
+              <AlertCircle size={16} />
+              <span>渲染异常，已切换{document.fileType === 'html' ? '源码' : '纯文本'}视图</span>
+              <button type="button" onClick={() => { setRenderFailed(false); setReaderMode('rendered') }}>重试</button>
+            </div>
+          )}
+          <pre className="source-view">{document.content}</pre>
+        </div>
       ) : document.fileType === 'html' && htmlInfo ? (
         <HtmlReader
           iframeRef={iframeRef}
@@ -730,16 +1052,41 @@ function ReaderPage({
             onShowToast('已恢复阻止外部资源', 'success')
           }}
         />
+      ) : document.fileType === 'html' && !htmlInfo ? (
+        <div>
+          <div className="render-fallback-notice">
+            <AlertCircle size={16} />
+            <span>HTML 解析异常，已切换源码视图</span>
+          </div>
+          <pre className="source-view">{document.content}</pre>
+        </div>
       ) : document.fileType === 'markdown' ? (
-        <article className="reader-content markdown-body" ref={contentRef}>
-          <ReactMarkdown
-            remarkPlugins={[remarkGfm]}
-            rehypePlugins={[[rehypeHighlight, { detect: true }]]}
-            components={markdownComponents}
-          >
-            {document.content}
-          </ReactMarkdown>
-        </article>
+        <RenderErrorBoundary
+          fallback={
+            <div>
+              <div className="render-fallback-notice">
+                <AlertCircle size={16} />
+                <span>渲染异常，已切换纯文本视图</span>
+                <button type="button" onClick={() => setRenderFailed(false)}>重试</button>
+              </div>
+              <pre className="source-view">{document.content}</pre>
+            </div>
+          }
+          onError={() => {
+            setRenderFailed(true)
+            onShowToast('渲染异常，已切换纯文本视图', 'warning')
+          }}
+        >
+          <article className="reader-content markdown-body" ref={contentRef}>
+            <ReactMarkdown
+              remarkPlugins={[remarkGfm]}
+              rehypePlugins={[[rehypeHighlight, { detect: true }]]}
+              components={markdownComponents}
+            >
+              {document.content}
+            </ReactMarkdown>
+          </article>
+        </RenderErrorBoundary>
       ) : (
         <TextReader content={document.content} />
       )}
@@ -757,7 +1104,7 @@ function ReaderPage({
           <SlidersHorizontal size={18} />
           <span>A+</span>
         </button>
-        <button type="button" onClick={() => copyText()}>
+        <button type="button" onClick={copyText}>
           <Copy size={18} />
           <span>复制</span>
         </button>
@@ -805,7 +1152,7 @@ function ReaderPage({
               label={readerMode === 'source' ? '查看阅读视图' : '查看源码'}
               onClick={() => setReaderMode(readerMode === 'source' ? 'rendered' : 'source')}
             />
-            <MenuAction icon={<Copy size={18} />} label="复制全文" onClick={() => copyText()} />
+            <MenuAction icon={<Copy size={18} />} label="复制全文" onClick={copyText} />
             {document.fileType === 'html' && (
               <MenuAction
                 icon={<ShieldCheck size={18} />}
@@ -822,10 +1169,37 @@ function ReaderPage({
                 }}
               />
             )}
-            <MenuAction icon={<Upload size={18} />} label="导出 PDF（占位）" onClick={() => onShowToast('PDF 导出将在 M11 实现')} />
-            <MenuAction icon={<ImageDown size={18} />} label="分享图片（占位）" onClick={() => onShowToast('图片分享将在 M11 实现')} />
-            <MenuAction icon={<Share2 size={18} />} label="分享原文件（占位）" onClick={() => onShowToast('原文件分享将在 M11 实现')} />
+            <MenuAction
+              icon={<Type size={18} />}
+              label="编码设置"
+              onClick={() => { setMenuOpen(false); setEncodingOpen(true) }}
+            />
+            <MenuAction icon={<Upload size={18} />} label={exporting ? '导出中...' : '导出 PDF'} onClick={exportPdf} />
+            <MenuAction icon={<ImageDown size={18} />} label={exporting ? '生成中...' : '分享图片'} onClick={shareAsImage} />
+            <MenuAction icon={<Share2 size={18} />} label={exporting ? '分享中...' : '分享原文件'} onClick={shareOriginalFile} />
           </div>
+        </Sheet>
+      )}
+
+      {encodingOpen && (
+        <Sheet title="编码设置" onClose={() => setEncodingOpen(false)}>
+          <p className="sheet-description">当前编码：{document.encoding}</p>
+          <div className="encoding-list">
+            {ENCODING_OPTIONS.map((opt) => (
+              <button
+                key={opt.value}
+                className={`encoding-option${document.encoding.toLowerCase() === opt.value ? ' active' : ''}`}
+                type="button"
+                onClick={() => switchEncoding(opt.value)}
+              >
+                <span>{opt.label}</span>
+                {document.encoding.toLowerCase() === opt.value && <span className="encoding-check">&#10003;</span>}
+              </button>
+            ))}
+          </div>
+          {!document.rawBase64 && (
+            <p className="sheet-description muted">文件较大，编码切换需要重新打开文件。</p>
+          )}
         </Sheet>
       )}
     </section>
@@ -979,23 +1353,44 @@ function SettingRow({ icon, title, description, value, onClick }: SettingRowProp
   )
 }
 
+const ERROR_TITLES: Record<FileOpenErrorCode, string> = {
+  PERMISSION_EXPIRED: '文件权限已失效',
+  FILE_NOT_FOUND: '文件未找到',
+  UNSUPPORTED_TYPE: '不支持的文件类型',
+  ENCODING_FAILED: '编码识别失败',
+  FILE_TOO_LARGE: '文件过大',
+  RENDER_FAILED: '渲染失败',
+  UNKNOWN: '暂时无法打开',
+}
+
+const ERROR_HINTS: Record<FileOpenErrorCode, string> = {
+  PERMISSION_EXPIRED: '外部文件的访问权限已过期，请重新选择文件。',
+  FILE_NOT_FOUND: '文件可能已被移动或删除。',
+  UNSUPPORTED_TYPE: '当前版本仅支持 Markdown 和 HTML 文件。',
+  ENCODING_FAILED: '无法识别文件编码，可尝试手动切换编码。',
+  FILE_TOO_LARGE: '文件体积超出安全阈值，可能导致卡顿。',
+  RENDER_FAILED: '文件内容解析异常，可查看源码或纯文本。',
+  UNKNOWN: '文件读取失败，请确认文件格式和访问权限。',
+}
+
 function OpenErrorState({
-  message,
+  error,
   onBack,
   onPickFile,
 }: {
-  message: string
+  error: FileOpenError | null
   onBack: () => void
   onPickFile: () => void
 }) {
+  const code = error?.code ?? 'UNKNOWN'
   return (
     <section className="page page-error" aria-label="打开失败">
       <div className="error-panel">
         <span className="error-icon">
           <AlertCircle size={28} />
         </span>
-        <h1>暂时无法打开</h1>
-        <p>{message || '文件读取失败，请确认文件格式和访问权限。'}</p>
+        <h1>{ERROR_TITLES[code]}</h1>
+        <p>{error?.message || ERROR_HINTS[code]}</p>
         <div className="error-actions">
           <button className="primary-action compact" type="button" onClick={onPickFile}>
             重新选择
@@ -1007,6 +1402,30 @@ function OpenErrorState({
       </div>
     </section>
   )
+}
+
+function LoadingState() {
+  return (
+    <section className="page page-loading" aria-label="加载中">
+      <div className="loading-panel">
+        <Loader2 size={32} className="loading-spinner" />
+        <p>正在打开...</p>
+      </div>
+    </section>
+  )
+}
+
+class RenderErrorBoundary extends React.Component<
+  { fallback: React.ReactNode; children: React.ReactNode; onError?: () => void },
+  { hasError: boolean }
+> {
+  state = { hasError: false }
+  static getDerivedStateFromError() { return { hasError: true } }
+  componentDidCatch() { this.props.onError?.() }
+  render() {
+    if (this.state.hasError) return this.props.fallback
+    return this.props.children
+  }
 }
 
 function EmptyState({ tab }: { tab: HomeTab }) {
@@ -1133,6 +1552,51 @@ function usePersistentState<T>(key: string, initialValue: T) {
   return [value, setValue] as const
 }
 
+function createRecordFromBytes({
+  fileName,
+  content,
+  encoding,
+  rawBase64,
+  sourceType,
+  sourceUri,
+  fileSize,
+  isFavorite = false,
+  inLibrary = false,
+  lastOpenedAt,
+}: {
+  fileName: string
+  content: string
+  encoding: string
+  rawBase64?: string
+  sourceType: string
+  sourceUri?: string
+  fileSize?: number
+  isFavorite?: boolean
+  inLibrary?: boolean
+  lastOpenedAt?: string
+}): DocumentRecord {
+  const extension = getExtension(fileName)
+  const now = new Date().toISOString()
+
+  return {
+    id: stableDocumentId(fileName, content),
+    fileName,
+    fileExtension: extension || 'txt',
+    fileType: inferFileType(fileName),
+    fileSize: fileSize ?? new Blob([content]).size,
+    sourceType,
+    sourceUri,
+    content,
+    rawBase64,
+    encoding: encoding.toUpperCase(),
+    lastOpenedAt: lastOpenedAt ?? now,
+    createdAt: now,
+    isFavorite,
+    inLibrary,
+    lastReadPosition: 0,
+  }
+}
+
 function createRecordFromContent({
   fileName,
   content,
@@ -1152,25 +1616,17 @@ function createRecordFromContent({
   inLibrary?: boolean
   lastOpenedAt?: string
 }): DocumentRecord {
-  const extension = getExtension(fileName)
-  const now = new Date().toISOString()
-
-  return {
-    id: stableDocumentId(fileName, content),
+  return createRecordFromBytes({
     fileName,
-    fileExtension: extension || 'txt',
-    fileType: inferFileType(fileName),
-    fileSize: fileSize ?? new Blob([content]).size,
+    content,
+    encoding: 'utf-8',
     sourceType,
     sourceUri,
-    content: stripUtf8Bom(content),
-    encoding: 'UTF-8',
-    lastOpenedAt: lastOpenedAt ?? now,
-    createdAt: now,
+    fileSize,
     isFavorite,
     inLibrary,
-    lastReadPosition: 0,
-  }
+    lastOpenedAt,
+  })
 }
 
 function upsertDocument(items: DocumentRecord[], doc: DocumentRecord) {
@@ -1214,10 +1670,6 @@ function stableDocumentId(fileName: string, content: string) {
     hash = (hash * 31 + input.charCodeAt(index)) | 0
   }
   return `${fileName.replace(/[^a-zA-Z0-9.-]/g, '_')}-${Math.abs(hash)}`
-}
-
-function stripUtf8Bom(content: string) {
-  return content.charCodeAt(0) === 0xfeff ? content.slice(1) : content
 }
 
 function extractMarkdownHeadings(markdown: string): HeadingItem[] {
@@ -1397,6 +1849,40 @@ function stripExternalCssUrls(css: string) {
   return css
     .replace(/url\(\s*['"]?(?:https?:)?\/\/[^'")\s;]+['"]?\s*\)/gi, 'none')
     .replace(/@import\s+['"](?:https?:)?\/\/[^'"]+['"]\s*;?/gi, '')
+}
+
+const PRINT_CSS = `<style>@media print{body{margin:0;padding:12mm}table{page-break-inside:avoid}pre{white-space:pre-wrap;word-break:break-all}img{max-width:100%;page-break-inside:avoid}h1,h2,h3,h4,h5,h6{page-break-after:avoid}.reader-header,.reader-toolbar,.search-panel,.reader-status,.sheet-backdrop{display:none!important}}</style>`
+
+function buildPrintDocument(title: string, bodyHtml: string, _settings: { themeMode: string }) {
+  return `<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>${escapeHtml(title)}</title>
+  <style>
+    :root { color: #33413a; background: #fff; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Microsoft YaHei", sans-serif; font-size: 16px; line-height: 1.72; }
+    * { box-sizing: border-box; }
+    body { margin: 0; padding: 18px 20px 40px; }
+    h1,h2,h3,h4,h5,h6 { color: #111a16; line-height: 1.28; margin: 1.4em 0 .65em; }
+    h1 { font-size: 1.7em; margin-top: 0; }
+    h2 { font-size: 1.42em; }
+    h3 { font-size: 1.16em; }
+    p, ul, ol, blockquote, pre, table { margin: 0 0 16px; }
+    img, video { max-width: 100%; height: auto; }
+    table { width: 100%; border-collapse: collapse; border: 1px solid #dde5dd; }
+    th, td { padding: 8px 10px; border: 1px solid #dde5dd; }
+    th { background: #f3f6f2; color: #111a16; }
+    pre { padding: 13px; border-radius: 4px; overflow-x: auto; background: #f5f5f5; color: #333; }
+    code { font-family: SFMono-Regular, Consolas, monospace; font-size: 0.9em; }
+    a { color: #138263; text-decoration: none; }
+    blockquote { padding: 10px 12px; border-left: 3px solid #138263; background: #e3f3ed; margin-left: 0; }
+    mark.search-hit { background: transparent; color: inherit; }
+  </style>
+  ${PRINT_CSS}
+</head>
+<body>${bodyHtml}</body>
+</html>`
 }
 
 function escapeHtml(value: string) {

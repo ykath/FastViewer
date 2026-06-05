@@ -6,6 +6,7 @@ import android.content.Intent;
 import android.database.Cursor;
 import android.net.Uri;
 import android.provider.OpenableColumns;
+import android.util.Base64;
 
 import com.getcapacitor.JSObject;
 import com.getcapacitor.Plugin;
@@ -14,8 +15,8 @@ import com.getcapacitor.PluginMethod;
 import com.getcapacitor.annotation.CapacitorPlugin;
 
 import java.io.ByteArrayOutputStream;
+import java.io.FileNotFoundException;
 import java.io.InputStream;
-import java.nio.charset.StandardCharsets;
 
 @CapacitorPlugin(name = "FastViewerFiles")
 public class FastViewerFilesPlugin extends Plugin {
@@ -55,11 +56,27 @@ public class FastViewerFilesPlugin extends Plugin {
             String fileName = resolveFileName(resolver, uri);
             long size = resolveFileSize(resolver, uri);
             String mimeType = resolver.getType(uri);
-            String content = readText(resolver, uri);
+            String base64Content = readBase64(resolver, uri);
 
-            call.resolve(createResult(uri, fileName, mimeType, size, content));
+            call.resolve(createResult(uri, fileName, mimeType, size, base64Content));
+        } catch (SecurityException exception) {
+            JSObject result = new JSObject();
+            result.put("hasFile", false);
+            result.put("error", "文件访问权限已失效，请重新选择文件。");
+            result.put("errorCode", "PERMISSION_EXPIRED");
+            call.resolve(result);
+        } catch (FileNotFoundException exception) {
+            JSObject result = new JSObject();
+            result.put("hasFile", false);
+            result.put("error", "文件不存在或已被删除。");
+            result.put("errorCode", "FILE_NOT_FOUND");
+            call.resolve(result);
         } catch (Exception exception) {
-            call.reject("无法读取外部文件：" + exception.getMessage(), exception);
+            JSObject result = new JSObject();
+            result.put("hasFile", false);
+            result.put("error", "无法读取外部文件：" + exception.getMessage());
+            result.put("errorCode", "UNKNOWN");
+            call.resolve(result);
         }
     }
 
@@ -74,24 +91,37 @@ public class FastViewerFilesPlugin extends Plugin {
             String fileName = resolveFileName(resolver, uri);
             long size = resolveFileSize(resolver, uri);
             String mimeType = resolver.getType(uri);
-            String content = readText(resolver, uri);
-            notifyListeners("fileOpen", createResult(uri, fileName, mimeType, size, content), true);
+            String base64Content = readBase64(resolver, uri);
+            notifyListeners("fileOpen", createResult(uri, fileName, mimeType, size, base64Content), true);
+        } catch (SecurityException exception) {
+            JSObject error = new JSObject();
+            error.put("hasFile", false);
+            error.put("error", "文件访问权限已失效，请重新选择文件。");
+            error.put("errorCode", "PERMISSION_EXPIRED");
+            notifyListeners("fileOpen", error, true);
+        } catch (FileNotFoundException exception) {
+            JSObject error = new JSObject();
+            error.put("hasFile", false);
+            error.put("error", "文件不存在或已被删除。");
+            error.put("errorCode", "FILE_NOT_FOUND");
+            notifyListeners("fileOpen", error, true);
         } catch (Exception exception) {
             JSObject error = new JSObject();
             error.put("hasFile", false);
             error.put("error", "无法读取外部文件：" + exception.getMessage());
+            error.put("errorCode", "UNKNOWN");
             notifyListeners("fileOpen", error, true);
         }
     }
 
-    private JSObject createResult(Uri uri, String fileName, String mimeType, long size, String content) {
+    private JSObject createResult(Uri uri, String fileName, String mimeType, long size, String base64Content) {
         JSObject result = new JSObject();
         result.put("hasFile", true);
         result.put("uri", uri.toString());
         result.put("fileName", fileName);
         result.put("mimeType", mimeType);
         result.put("size", size);
-        result.put("content", content);
+        result.put("base64Content", base64Content);
         return result;
     }
 
@@ -163,7 +193,7 @@ public class FastViewerFilesPlugin extends Plugin {
         return -1;
     }
 
-    private String readText(ContentResolver resolver, Uri uri) throws Exception {
+    private String readBase64(ContentResolver resolver, Uri uri) throws Exception {
         try (InputStream input = resolver.openInputStream(uri)) {
             if (input == null) {
                 throw new IllegalStateException("文件流为空");
@@ -176,7 +206,7 @@ public class FastViewerFilesPlugin extends Plugin {
                 output.write(buffer, 0, read);
             }
 
-            return output.toString(StandardCharsets.UTF_8.name());
+            return Base64.encodeToString(output.toByteArray(), Base64.NO_WRAP);
         }
     }
 }
