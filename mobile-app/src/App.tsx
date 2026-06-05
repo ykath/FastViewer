@@ -28,6 +28,7 @@ import ReactMarkdown from 'react-markdown'
 import type { Components } from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import { Capacitor, registerPlugin } from '@capacitor/core'
+import type { PluginListenerHandle } from '@capacitor/core'
 import './App.css'
 
 type View = 'home' | 'reader' | 'settings' | 'error'
@@ -76,6 +77,10 @@ type ExternalFileResult = {
 
 type FastViewerFilesPlugin = {
   getLaunchFile: () => Promise<ExternalFileResult>
+  addListener: (
+    eventName: 'fileOpen',
+    listenerFunc: (result: ExternalFileResult) => void,
+  ) => Promise<PluginListenerHandle>
 }
 
 const FastViewerFiles = registerPlugin<FastViewerFilesPlugin>('FastViewerFiles')
@@ -167,12 +172,6 @@ function App() {
     }
   }, [activeDocumentId, documents])
 
-  useEffect(() => {
-    void loadExternalLaunchFile()
-    // Only run once on app boot to consume the native launch intent.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [])
-
   const showToast = (message: string, tone: ToastState['tone'] = 'normal') => {
     setToast({ message, tone })
     window.setTimeout(() => setToast(null), 2200)
@@ -202,27 +201,68 @@ function App() {
     }
   }
 
+  const importExternalResult = (result: ExternalFileResult) => {
+    if (result.error) {
+      setErrorMessage(result.error)
+      setView('error')
+      return
+    }
+
+    if (!result.hasFile || !result.content || !result.fileName) return
+
+    const record = createRecordFromContent({
+      fileName: result.fileName,
+      content: result.content,
+      sourceType: '外部应用',
+      sourceUri: result.uri,
+      fileSize: result.size,
+    })
+
+    if (record.fileType === 'html') {
+      importDocument(record, false)
+      setErrorMessage('HTML 浏览将在 M7 阶段实现。当前版本已保存文件记录，但只支持 Markdown 阅读。')
+      setView('error')
+      return
+    }
+
+    importDocument(record)
+    showToast('已从外部应用打开文件', 'success')
+  }
+
   const loadExternalLaunchFile = async () => {
     if (!Capacitor.isNativePlatform()) return
 
     try {
       const result = await FastViewerFiles.getLaunchFile()
-      if (!result.hasFile || !result.content || !result.fileName) return
-
-      const record = createRecordFromContent({
-        fileName: result.fileName,
-        content: result.content,
-        sourceType: '外部应用',
-        sourceUri: result.uri,
-        fileSize: result.size,
-      })
-      importDocument(record)
-      showToast('已从外部应用打开文件', 'success')
+      importExternalResult(result)
     } catch (error) {
       setErrorMessage(error instanceof Error ? error.message : '外部文件读取失败')
       setView('error')
     }
   }
+
+  useEffect(() => {
+    void loadExternalLaunchFile()
+    // Only run once on app boot to consume the native launch intent.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
+  useEffect(() => {
+    if (!Capacitor.isNativePlatform()) return undefined
+
+    let handle: PluginListenerHandle | undefined
+    void FastViewerFiles.addListener('fileOpen', (result) => {
+      importExternalResult(result)
+    }).then((listenerHandle) => {
+      handle = listenerHandle
+    })
+
+    return () => {
+      void handle?.remove()
+    }
+    // Listener should stay attached for the app lifetime; callbacks use current state through React rerenders.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
 
   const handlePickedFile = async (file: File) => {
     try {
