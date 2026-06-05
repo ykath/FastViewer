@@ -32,7 +32,26 @@
                 <data android:mimeType="text/x-markdown" />
                 <data android:mimeType="text/html" />
                 <data android:mimeType="text/plain" />
+                <data android:mimeType="application/zip" />
+                <data android:mimeType="application/x-zip" />
+                <data android:mimeType="application/x-zip-compressed" />
+                <data android:mimeType="multipart/x-zip" />
+                <data android:mimeType="application/x-compressed" />
+                <data android:mimeType="application/rar" />
+                <data android:mimeType="application/vnd.rar" />
+                <data android:mimeType="application/x-rar" />
+                <data android:mimeType="application/x-rar-compressed" />
                 <data android:mimeType="application/octet-stream" />
+            </intent-filter>
+
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="file" android:pathPattern=".*\\.zip" />
+                <data android:scheme="file" android:pathPattern=".*\\.rar" />
+                <data android:scheme="content" android:pathPattern=".*\\.zip" />
+                <data android:scheme="content" android:pathPattern=".*\\.rar" />
             </intent-filter>
 
             <intent-filter>
@@ -42,6 +61,15 @@
                 <data android:mimeType="text/x-markdown" />
                 <data android:mimeType="text/html" />
                 <data android:mimeType="text/plain" />
+                <data android:mimeType="application/zip" />
+                <data android:mimeType="application/x-zip" />
+                <data android:mimeType="application/x-zip-compressed" />
+                <data android:mimeType="multipart/x-zip" />
+                <data android:mimeType="application/x-compressed" />
+                <data android:mimeType="application/rar" />
+                <data android:mimeType="application/vnd.rar" />
+                <data android:mimeType="application/x-rar" />
+                <data android:mimeType="application/x-rar-compressed" />
                 <data android:mimeType="application/octet-stream" />
             </intent-filter>
 

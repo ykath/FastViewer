@@ -27,7 +27,7 @@ import {
   X,
 } from 'lucide-react'
 import React, { createElement, useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import ReactMarkdown from 'react-markdown'
+import ReactMarkdown, { defaultUrlTransform } from 'react-markdown'
 import type { Components } from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import rehypeHighlight from 'rehype-highlight'
@@ -50,9 +50,11 @@ type ReaderMode = 'rendered' | 'source'
 type FileOpenErrorCode =
   | 'PERMISSION_EXPIRED'
   | 'FILE_NOT_FOUND'
+  | 'NO_VIEWABLE_FILE'
   | 'UNSUPPORTED_TYPE'
   | 'ENCODING_FAILED'
   | 'FILE_TOO_LARGE'
+  | 'ARCHIVE_FAILED'
   | 'RENDER_FAILED'
   | 'UNKNOWN'
 
@@ -75,6 +77,8 @@ type DocumentRecord = {
   sourceUri?: string
   content: string
   rawBase64?: string
+  archiveRelativePath?: string
+  archiveResources?: Record<string, string>
   encoding: string
   lastOpenedAt: string
   createdAt: string
@@ -97,6 +101,7 @@ type ToastState = {
 
 type ExternalFileResult = {
   hasFile?: boolean
+  isArchive?: boolean
   uri?: string
   fileName?: string
   mimeType?: string
@@ -105,6 +110,17 @@ type ExternalFileResult = {
   size?: number
   error?: string
   errorCode?: string
+  documents?: ExternalArchiveDocument[]
+  resources?: Record<string, string>
+}
+
+type ExternalArchiveDocument = {
+  fileName: string
+  relativePath?: string
+  archiveName?: string
+  sourceUri?: string
+  base64Content: string
+  size?: number
 }
 
 type ExternalResource = {
@@ -122,6 +138,12 @@ type HtmlRenderInfo = {
 
 type FastViewerFilesPlugin = {
   getLaunchFile: () => Promise<ExternalFileResult>
+  importArchive: (options: {
+    fileName: string
+    base64Content: string
+    mimeType?: string
+    size?: number
+  }) => Promise<ExternalFileResult>
   addListener: (
     eventName: 'fileOpen',
     listenerFunc: (result: ExternalFileResult) => void,
@@ -297,6 +319,39 @@ function App() {
     showToast(displayType, 'success')
   }
 
+  const importArchiveDocuments = (result: ExternalFileResult) => {
+    const archiveDocuments = result.documents ?? []
+    if (archiveDocuments.length === 0) {
+      showError('NO_VIEWABLE_FILE', '压缩包中没有 Markdown 或 HTML 文件。')
+      return
+    }
+
+    const importedAt = Date.now()
+    const records = archiveDocuments.map((item, index) => {
+      const bytes = base64ToBytes(item.base64Content)
+      const decoded = detectAndDecode(bytes)
+      const record = createRecordFromBytes({
+        fileName: item.relativePath ?? item.fileName,
+        content: decoded.content,
+        encoding: decoded.encoding,
+        rawBase64: bytes.length <= FILE_SIZE_RAW_LIMIT ? bytesToBase64(bytes) : undefined,
+        sourceType: `压缩包：${result.fileName ?? item.archiveName ?? '未知压缩包'}`,
+        sourceUri: item.sourceUri ?? result.uri,
+        fileSize: item.size ?? bytes.length,
+        inLibrary: true,
+        lastOpenedAt: new Date(importedAt - index).toISOString(),
+        archiveRelativePath: item.relativePath,
+        archiveResources: result.resources,
+      })
+      return record
+    })
+
+    persistDocuments((items) => records.reduce((next, record) => upsertDocument(next, record), items))
+    setActiveDocumentId(records[0].id)
+    setView('reader')
+    showToast(`已从压缩包导入 ${records.length} 个可查看文件`, 'success')
+  }
+
   const importExternalResult = async (result: ExternalFileResult) => {
     if (result.error || result.errorCode) {
       const code = (result.errorCode as FileOpenErrorCode) || 'UNKNOWN'
@@ -305,6 +360,16 @@ function App() {
     }
 
     if (!result.hasFile) return
+
+    if (result.isArchive || result.documents?.length) {
+      setView('loading')
+      try {
+        importArchiveDocuments(result)
+      } catch {
+        showError('ARCHIVE_FAILED', '压缩包内容处理失败，请确认文件未损坏。')
+      }
+      return
+    }
 
     // Backwards compat: if native sent base64Content, use new pipeline
     if (result.base64Content && result.fileName) {
@@ -380,6 +445,24 @@ function App() {
 
   const handlePickedFile = async (file: File) => {
     try {
+      if (isArchiveFileName(file.name)) {
+        if (!Capacitor.isNativePlatform()) {
+          showError('UNSUPPORTED_TYPE', '压缩包导入需要在 Android App 中使用。')
+          return
+        }
+
+        setView('loading')
+        const buffer = await file.arrayBuffer()
+        const result = await FastViewerFiles.importArchive({
+          fileName: file.name,
+          base64Content: bytesToBase64(new Uint8Array(buffer)),
+          mimeType: file.type,
+          size: file.size,
+        })
+        await importExternalResult(result)
+        return
+      }
+
       const size = file.size
       if (size >= FILE_SIZE_DANGER) {
         setView('loading')
@@ -430,7 +513,7 @@ function App() {
         ref={fileInputRef}
         className="visually-hidden"
         type="file"
-        accept=".md,.markdown,.mdown,.html,.htm,text/markdown,text/html,text/plain"
+        accept=".md,.markdown,.mdown,.html,.htm,.zip,.rar,text/markdown,text/html,text/plain,application/zip,application/x-zip-compressed,application/vnd.rar,application/x-rar-compressed"
         onChange={(event) => {
           const file = event.target.files?.[0]
           if (file) void handlePickedFile(file)
@@ -693,18 +776,21 @@ function ReaderPage({
     () => {
       if (document.fileType !== 'html') return null
       try {
-        return buildSafeHtmlDocument(document.content, { allowExternalResources, allowScripts })
+        const html = document.archiveResources
+          ? rewriteRelativeResources(document.content, document.fileName, document.archiveRelativePath, document.archiveResources)
+          : document.content
+        return buildSafeHtmlDocument(html, { allowExternalResources, allowScripts })
       } catch {
         return null
       }
     },
-    [allowExternalResources, allowScripts, document.content, document.fileType],
+    [allowExternalResources, allowScripts, document.archiveRelativePath, document.archiveResources, document.content, document.fileName, document.fileType],
   )
   const headings = useMemo(
     () => (document.fileType === 'html' ? htmlInfo?.headings ?? [] : extractMarkdownHeadings(document.content)),
     [document.content, document.fileType, htmlInfo],
   )
-  const markdownComponents = createMarkdownComponents()
+  const markdownComponents = createMarkdownComponents(document.archiveRelativePath ?? document.fileName, document.archiveResources)
 
   useEffect(() => {
     if (activeDocumentIdRef.current === document.id) return
@@ -1209,6 +1295,7 @@ function ReaderPage({
               remarkPlugins={[remarkGfm]}
               rehypePlugins={[[rehypeHighlight, { detect: true }]]}
               components={markdownComponents}
+              urlTransform={markdownUrlTransform}
             >
               {document.content}
             </ReactMarkdown>
@@ -1453,6 +1540,8 @@ function SettingRow({ icon, title, description, value, onClick }: SettingRowProp
 }
 
 const ERROR_TITLES: Record<FileOpenErrorCode, string> = {
+  NO_VIEWABLE_FILE: '压缩包无可查看文件',
+  ARCHIVE_FAILED: '压缩包处理失败',
   PERMISSION_EXPIRED: '文件权限已失效',
   FILE_NOT_FOUND: '文件未找到',
   UNSUPPORTED_TYPE: '不支持的文件类型',
@@ -1463,6 +1552,8 @@ const ERROR_TITLES: Record<FileOpenErrorCode, string> = {
 }
 
 const ERROR_HINTS: Record<FileOpenErrorCode, string> = {
+  NO_VIEWABLE_FILE: '压缩包中没有 .md、.markdown、.html 或 .htm 文件，解压目录已自动清理。',
+  ARCHIVE_FAILED: '压缩包可能已损坏、被加密，或 RAR 格式版本暂不兼容。',
   PERMISSION_EXPIRED: '外部文件的访问权限已过期，请重新选择文件。',
   FILE_NOT_FOUND: '文件可能已被移动或删除。',
   UNSUPPORTED_TYPE: '当前版本仅支持 Markdown 和 HTML 文件。',
@@ -1662,6 +1753,8 @@ function createRecordFromBytes({
   isFavorite = false,
   inLibrary = false,
   lastOpenedAt,
+  archiveRelativePath,
+  archiveResources,
 }: {
   fileName: string
   content: string
@@ -1673,6 +1766,8 @@ function createRecordFromBytes({
   isFavorite?: boolean
   inLibrary?: boolean
   lastOpenedAt?: string
+  archiveRelativePath?: string
+  archiveResources?: Record<string, string>
 }): DocumentRecord {
   const extension = getExtension(fileName)
   const now = new Date().toISOString()
@@ -1687,6 +1782,8 @@ function createRecordFromBytes({
     sourceUri,
     content,
     rawBase64,
+    archiveRelativePath,
+    archiveResources,
     encoding: encoding.toUpperCase(),
     lastOpenedAt: lastOpenedAt ?? now,
     createdAt: now,
@@ -1755,11 +1852,99 @@ function getExtension(fileName: string) {
   return fileName.includes('.') ? fileName.split('.').pop()?.toLowerCase() ?? '' : ''
 }
 
+function isArchiveFileName(fileName: string) {
+  return ['zip', 'rar'].includes(getExtension(fileName))
+}
+
 function inferFileType(fileName: string): DocumentType {
   const extension = getExtension(fileName)
   if (['md', 'markdown', 'mdown'].includes(extension)) return 'markdown'
   if (['html', 'htm', 'xhtml'].includes(extension)) return 'html'
   return 'text'
+}
+
+function bytesToBase64(bytes: Uint8Array) {
+  let binary = ''
+  const chunkSize = 0x8000
+  for (let index = 0; index < bytes.length; index += chunkSize) {
+    binary += String.fromCharCode(...bytes.subarray(index, index + chunkSize))
+  }
+  return btoa(binary)
+}
+
+function rewriteRelativeResources(
+  content: string,
+  fileName: string,
+  relativePath?: string,
+  resources?: Record<string, string>,
+) {
+  if (!resources || Object.keys(resources).length === 0) return content
+
+  const documentDir = dirname(relativePath ?? fileName)
+  const resolve = (value: string) => {
+    const cleanValue = value.trim().replace(/^['"]|['"]$/g, '')
+    if (!cleanValue || isExternalUrl(cleanValue) || /^(data|blob|mailto|tel|javascript):/i.test(cleanValue) || cleanValue.startsWith('#')) {
+      return value
+    }
+
+    const resource = resources[normalizeArchiveResourcePath(documentDir, cleanValue)]
+    return resource ?? value
+  }
+
+  return content
+    .replace(/(!\[[^\]]*]\()([^)\r\n]+)(\))/g, (match, prefix: string, url: string, suffix: string) => {
+      const resolved = resolve(url)
+      return resolved === url ? match : `${prefix}${resolved}${suffix}`
+    })
+    .replace(/\b(src|href)=("([^"]+)"|'([^']+)')/gi, (match, attr: string, quoted: string, doubleValue?: string, singleValue?: string) => {
+      const value = doubleValue ?? singleValue ?? ''
+      const resolved = resolve(value)
+      if (resolved === value) return match
+      const quote = quoted.startsWith("'") ? "'" : '"'
+      return `${attr}=${quote}${resolved}${quote}`
+    })
+    .replace(/url\((['"]?)([^'")]+)\1\)/gi, (match, quote: string, url: string) => {
+      const resolved = resolve(url)
+      return resolved === url ? match : `url(${quote}${resolved}${quote})`
+    })
+}
+
+function normalizeArchiveResourcePath(documentDir: string, resourcePath: string) {
+  const [pathOnly] = resourcePath.split(/[?#]/, 1)
+  const decoded = decodeURIComponentSafe(pathOnly)
+  const parts = `${documentDir}/${decoded}`.replace(/\\/g, '/').split('/')
+  const normalized: string[] = []
+
+  parts.forEach((part) => {
+    if (!part || part === '.') return
+    if (part === '..') {
+      normalized.pop()
+      return
+    }
+    normalized.push(part)
+  })
+
+  return normalized.join('/').toLowerCase()
+}
+
+function dirname(path: string) {
+  const normalized = path.replace(/\\/g, '/')
+  const index = normalized.lastIndexOf('/')
+  return index >= 0 ? normalized.slice(0, index) : ''
+}
+
+function decodeURIComponentSafe(value: string) {
+  try {
+    return decodeURIComponent(value)
+  } catch {
+    return value
+  }
+}
+
+function markdownUrlTransform(value: string) {
+  return /^data:image\/(?:png|jpe?g|webp|gif|svg\+xml);base64,/i.test(value)
+    ? value
+    : defaultUrlTransform(value)
 }
 
 function stableDocumentId(fileName: string, content: string) {
@@ -2102,8 +2287,13 @@ function slugify(text: string) {
   )
 }
 
-function createMarkdownComponents(): Components {
+function createMarkdownComponents(documentPath?: string, resources?: Record<string, string>): Components {
   const used = new Map<string, number>()
+  const documentDir = dirname(documentPath ?? '')
+  const resolveResource = (src: string) => {
+    if (!resources) return src
+    return resources[normalizeArchiveResourcePath(documentDir, src)] ?? src
+  }
 
   const heading = (level: 1 | 2 | 3 | 4 | 5 | 6) => {
     const tagName = `h${level}`
@@ -2139,7 +2329,7 @@ function createMarkdownComponents(): Components {
     },
     img({ alt, src }) {
       return (
-        <ImgWithFallback src={src ?? ''} alt={alt ?? ''} />
+        <ImgWithFallback src={resolveResource(src ?? '')} alt={alt ?? ''} />
       )
     },
     li({ children, ...props }) {
