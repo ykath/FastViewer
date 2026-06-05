@@ -10,6 +10,7 @@ mobile-app/android/build/
 mobile-app/android/app/build/
 mobile-app/android/capacitor-cordova-android-plugins/build/
 mobile-app/android/capacitor-cordova-android-plugins/.cxx/
+test/
 
 # Android SDK & toolchain archives (large, user-local)
 tools/android-sdk/

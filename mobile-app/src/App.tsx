@@ -33,6 +33,7 @@ import remarkGfm from 'remark-gfm'
 import rehypeHighlight from 'rehype-highlight'
 import { Capacitor, registerPlugin } from '@capacitor/core'
 import type { PluginListenerHandle } from '@capacitor/core'
+import { App as CapacitorApp } from '@capacitor/app'
 import { Share } from '@capacitor/share'
 import { Filesystem, Directory, Encoding } from '@capacitor/filesystem'
 import html2canvas from 'html2canvas-pro'
@@ -668,6 +669,7 @@ function ReaderPage({
   const [searchCount, setSearchCount] = useState(0)
   const [tocOpen, setTocOpen] = useState(false)
   const [menuOpen, setMenuOpen] = useState(false)
+  const [readerToolsOpen, setReaderToolsOpen] = useState(false)
   const [encodingOpen, setEncodingOpen] = useState(false)
   const [readerMode, setReaderMode] = useState<ReaderMode>('rendered')
   const [renderFailed, setRenderFailed] = useState(false)
@@ -676,18 +678,26 @@ function ReaderPage({
   const contentRef = useRef<HTMLElement | null>(null)
   const scrollRef = useRef<HTMLElement | null>(null)
   const iframeRef = useRef<HTMLIFrameElement | null>(null)
+  const edgeSwipeRef = useRef({
+    active: false,
+    startX: 0,
+    startY: 0,
+    lastX: 0,
+    lastY: 0,
+  })
 
+  const allowScripts = document.fileType === 'html' && Boolean(document.trustedHtml)
   const allowExternalResources = document.fileType === 'html' && (allowExternalOnce || Boolean(document.trustedHtml))
   const htmlInfo = useMemo(
     () => {
       if (document.fileType !== 'html') return null
       try {
-        return buildSafeHtmlDocument(document.content, { allowExternalResources })
+        return buildSafeHtmlDocument(document.content, { allowExternalResources, allowScripts })
       } catch {
         return null
       }
     },
-    [allowExternalResources, document.content, document.fileType],
+    [allowExternalResources, allowScripts, document.content, document.fileType],
   )
   const headings = useMemo(
     () => (document.fileType === 'html' ? htmlInfo?.headings ?? [] : extractMarkdownHeadings(document.content)),
@@ -702,6 +712,7 @@ function ReaderPage({
     setReaderMode('rendered')
     setRenderFailed(false)
     setAllowExternalOnce(false)
+    setReaderToolsOpen(false)
     setEncodingOpen(false)
     window.setTimeout(() => {
       scrollRef.current?.scrollTo({ top: document.lastReadPosition })
@@ -788,6 +799,86 @@ function ReaderPage({
     setSearchIndex((current) => (current + delta + searchCount) % searchCount)
   }
 
+  const closeTopReaderLayer = useCallback(() => {
+    if (encodingOpen) {
+      setEncodingOpen(false)
+      return true
+    }
+    if (menuOpen) {
+      setMenuOpen(false)
+      return true
+    }
+    if (tocOpen) {
+      setTocOpen(false)
+      return true
+    }
+    if (searchOpen) {
+      setSearchOpen(false)
+      return true
+    }
+    if (readerToolsOpen) {
+      setReaderToolsOpen(false)
+      return true
+    }
+
+    return false
+  }, [encodingOpen, menuOpen, readerToolsOpen, searchOpen, tocOpen])
+
+  useEffect(() => {
+    if (!Capacitor.isNativePlatform()) return undefined
+
+    let backButtonHandle: PluginListenerHandle | null = null
+    let disposed = false
+    void CapacitorApp.addListener('backButton', () => {
+      if (closeTopReaderLayer()) return
+      onBack()
+    }).then((handle) => {
+      if (disposed) {
+        void handle.remove()
+        return
+      }
+      backButtonHandle = handle
+    })
+
+    return () => {
+      disposed = true
+      void backButtonHandle?.remove()
+    }
+  }, [closeTopReaderLayer, onBack])
+
+  const handleEdgePointerDown = (event: React.PointerEvent<HTMLElement>) => {
+    const target = event.target as HTMLElement
+    if (target.closest('button, input, textarea, select, a, .search-panel, .reader-toolbar, .html-frame')) return
+
+    edgeSwipeRef.current = {
+      active: event.clientX <= 28,
+      startX: event.clientX,
+      startY: event.clientY,
+      lastX: event.clientX,
+      lastY: event.clientY,
+    }
+  }
+
+  const handleEdgePointerMove = (event: React.PointerEvent<HTMLElement>) => {
+    if (!edgeSwipeRef.current.active) return
+    edgeSwipeRef.current.lastX = event.clientX
+    edgeSwipeRef.current.lastY = event.clientY
+  }
+
+  const handleEdgePointerUp = () => {
+    const swipe = edgeSwipeRef.current
+    if (!swipe.active) return
+
+    const deltaX = swipe.lastX - swipe.startX
+    const deltaY = Math.abs(swipe.lastY - swipe.startY)
+    edgeSwipeRef.current.active = false
+
+    if (deltaX >= 76 && deltaY <= 54) {
+      if (closeTopReaderLayer()) return
+      onBack()
+    }
+  }
+
   const switchEncoding = (encoding: EncodingLabel) => {
     if (!document.rawBase64) {
       onShowToast('文件过大，无法切换编码，请重新打开文件', 'warning')
@@ -853,7 +944,7 @@ function ReaderPage({
         printHtml = htmlInfo.srcDoc.replace('</head>', `${PRINT_CSS}</head>`)
       } else {
         const rendered = contentRef.current?.innerHTML ?? `<pre>${escapeHtml(document.content)}</pre>`
-        printHtml = buildPrintDocument(document.fileName, rendered, settings)
+        printHtml = buildPrintDocument(document.fileName, rendered)
       }
 
       const printFrame = window.document.createElement('iframe')
@@ -948,17 +1039,19 @@ function ReaderPage({
     const frameDocument = iframeRef.current?.contentDocument
     if (!frameDocument) return
 
-    frameDocument.querySelectorAll('a[href]').forEach((anchor) => {
-      anchor.addEventListener('click', (event) => {
-        const href = (event.currentTarget as HTMLAnchorElement).href
-        if (!href) return
+    if (!allowScripts) {
+      frameDocument.querySelectorAll('a[href]').forEach((anchor) => {
+        anchor.addEventListener('click', (event) => {
+          const href = (event.currentTarget as HTMLAnchorElement).href
+          if (!href) return
 
-        event.preventDefault()
-        if (window.confirm(`要打开外部链接吗？\n${href}`)) {
-          window.open(href, '_blank', 'noopener,noreferrer')
-        }
+          event.preventDefault()
+          if (window.confirm(`要打开外部链接吗？\n${href}`)) {
+            window.open(href, '_blank', 'noopener,noreferrer')
+          }
+        })
       })
-    })
+    }
 
     setHtmlFrameVersion((version) => version + 1)
   }
@@ -969,6 +1062,12 @@ function ReaderPage({
       aria-label="文件阅读页"
       ref={scrollRef}
       onScroll={saveScrollPosition}
+      onPointerDown={handleEdgePointerDown}
+      onPointerMove={handleEdgePointerMove}
+      onPointerUp={handleEdgePointerUp}
+      onPointerCancel={() => {
+        edgeSwipeRef.current.active = false
+      }}
     >
       <header className="reader-header">
         <button className="icon-button" type="button" onClick={onBack} aria-label="返回">
@@ -992,7 +1091,7 @@ function ReaderPage({
       </header>
 
       {searchOpen && (
-        <div className="search-panel">
+        <div className="search-panel" role="search" onPointerDown={(event) => event.stopPropagation()}>
           <Search size={17} />
           <input
             value={query}
@@ -1006,9 +1105,34 @@ function ReaderPage({
           <span className="search-count">
             {query ? `${searchCount ? searchIndex + 1 : 0}/${searchCount}` : '0/0'}
           </span>
-          <button type="button" onClick={() => nextSearchResult(-1)}>上</button>
-          <button type="button" onClick={() => nextSearchResult(1)}>下</button>
-          <button type="button" onClick={() => setSearchOpen(false)} aria-label="关闭搜索">
+          <button
+            type="button"
+            onMouseDown={(event) => event.preventDefault()}
+            onClick={(event) => {
+              event.stopPropagation()
+              nextSearchResult(-1)
+            }}
+          >
+            上
+          </button>
+          <button
+            type="button"
+            onMouseDown={(event) => event.preventDefault()}
+            onClick={(event) => {
+              event.stopPropagation()
+              nextSearchResult(1)
+            }}
+          >
+            下
+          </button>
+          <button
+            type="button"
+            onClick={(event) => {
+              event.stopPropagation()
+              setSearchOpen(false)
+            }}
+            aria-label="关闭搜索"
+          >
             <X size={16} />
           </button>
         </div>
@@ -1019,6 +1143,26 @@ function ReaderPage({
         <button className="encoding-badge" type="button" onClick={() => setEncodingOpen(true)}>
           {document.encoding}
         </button>
+        {document.fileType === 'html' && (
+          <button
+            className={`trust-badge${allowScripts ? ' trusted' : ''}`}
+            type="button"
+            onClick={() => {
+              onUpdate({ trustedHtml: !document.trustedHtml })
+              if (document.trustedHtml) {
+                setAllowExternalOnce(false)
+                onShowToast('已禁用 HTML 脚本', 'success')
+              } else {
+                onShowToast('已信任此 HTML 并启用脚本', 'success')
+              }
+            }}
+            aria-label={allowScripts ? '已信任 HTML，点击禁用脚本' : '未信任 HTML，点击启用脚本'}
+            title={allowScripts ? '已信任 HTML' : '未信任 HTML'}
+          >
+            <ShieldCheck size={14} />
+            <span>{allowScripts ? '已信任' : '未信任'}</span>
+          </button>
+        )}
         <span>本地处理</span>
       </div>
 
@@ -1037,20 +1181,8 @@ function ReaderPage({
         <HtmlReader
           iframeRef={iframeRef}
           info={htmlInfo}
-          trusted={Boolean(document.trustedHtml)}
-          allowExternalOnce={allowExternalOnce}
+          scriptsEnabled={allowScripts}
           onFrameLoad={handleHtmlFrameLoad}
-          onAllowExternalOnce={() => setAllowExternalOnce(true)}
-          onBlockExternal={() => setAllowExternalOnce(false)}
-          onTrustFile={() => {
-            onUpdate({ trustedHtml: true })
-            onShowToast('已信任此 HTML 文件', 'success')
-          }}
-          onRevokeTrust={() => {
-            onUpdate({ trustedHtml: false })
-            setAllowExternalOnce(false)
-            onShowToast('已恢复阻止外部资源', 'success')
-          }}
         />
       ) : document.fileType === 'html' && !htmlInfo ? (
         <div>
@@ -1091,24 +1223,35 @@ function ReaderPage({
         <TextReader content={document.content} />
       )}
 
-      <footer className="reader-toolbar" aria-label="阅读工具">
-        <button type="button" onClick={toggleTheme}>
-          {settings.themeMode === 'light' ? <Sun size={18} /> : <Moon size={18} />}
-          <span>主题</span>
+      <div className={`reader-toolbar${readerToolsOpen ? ' open' : ''}`} aria-label="阅读工具">
+        <div className="reader-tool-menu" aria-hidden={!readerToolsOpen}>
+          <button type="button" onClick={toggleTheme} tabIndex={readerToolsOpen ? 0 : -1}>
+            {settings.themeMode === 'light' ? <Sun size={18} /> : <Moon size={18} />}
+            <span>主题</span>
+          </button>
+          <button type="button" onClick={() => changeFontSize(-1)} tabIndex={readerToolsOpen ? 0 : -1}>
+            <SlidersHorizontal size={18} />
+            <span>A-</span>
+          </button>
+          <button type="button" onClick={() => changeFontSize(1)} tabIndex={readerToolsOpen ? 0 : -1}>
+            <SlidersHorizontal size={18} />
+            <span>A+</span>
+          </button>
+          <button type="button" onClick={copyText} tabIndex={readerToolsOpen ? 0 : -1}>
+            <Copy size={18} />
+            <span>复制</span>
+          </button>
+        </div>
+        <button
+          className="reader-tool-toggle"
+          type="button"
+          onClick={() => setReaderToolsOpen((open) => !open)}
+          aria-expanded={readerToolsOpen}
+          aria-label={readerToolsOpen ? '收起阅读工具' : '展开阅读工具'}
+        >
+          {readerToolsOpen ? <X size={20} /> : <SlidersHorizontal size={20} />}
         </button>
-        <button type="button" onClick={() => changeFontSize(-1)}>
-          <SlidersHorizontal size={18} />
-          <span>A-</span>
-        </button>
-        <button type="button" onClick={() => changeFontSize(1)}>
-          <SlidersHorizontal size={18} />
-          <span>A+</span>
-        </button>
-        <button type="button" onClick={copyText}>
-          <Copy size={18} />
-          <span>复制</span>
-        </button>
-      </footer>
+      </div>
 
       {tocOpen && (
         <Sheet title="目录" onClose={() => setTocOpen(false)}>
@@ -1156,16 +1299,17 @@ function ReaderPage({
             {document.fileType === 'html' && (
               <MenuAction
                 icon={<ShieldCheck size={18} />}
-                label={document.trustedHtml ? '取消信任此 HTML' : '信任此 HTML'}
+                label={document.trustedHtml ? '禁用 HTML 脚本' : '信任并启用 HTML 脚本'}
                 onClick={() => {
                   if (document.trustedHtml) {
                     onUpdate({ trustedHtml: false })
                     setAllowExternalOnce(false)
-                    onShowToast('已取消信任', 'success')
+                    onShowToast('已禁用 HTML 脚本', 'success')
                   } else {
                     onUpdate({ trustedHtml: true })
-                    onShowToast('已信任此 HTML 文件', 'success')
+                    onShowToast('已信任此 HTML 并启用脚本', 'success')
                   }
+                  setMenuOpen(false)
                 }}
               />
             )}
@@ -1213,61 +1357,21 @@ function TextReader({ content }: { content: string }) {
 function HtmlReader({
   iframeRef,
   info,
-  trusted,
-  allowExternalOnce,
-  onAllowExternalOnce,
-  onBlockExternal,
-  onTrustFile,
-  onRevokeTrust,
+  scriptsEnabled,
   onFrameLoad,
 }: {
   iframeRef: React.RefObject<HTMLIFrameElement | null>
   info: HtmlRenderInfo
-  trusted: boolean
-  allowExternalOnce: boolean
-  onAllowExternalOnce: () => void
-  onBlockExternal: () => void
-  onTrustFile: () => void
-  onRevokeTrust: () => void
+  scriptsEnabled: boolean
   onFrameLoad: () => void
 }) {
-  const hasExternal = info.externalResources.length > 0
-
   return (
     <div className="html-reader">
-      <section className="html-security-panel">
-        <div className="html-security-title">
-          <ShieldCheck size={18} />
-          <strong>已在安全沙盒中打开</strong>
-        </div>
-        <div className="html-security-tags">
-          <span>脚本已禁用</span>
-          <span>阻止自动跳转</span>
-          <span>{trusted || allowExternalOnce ? '外部资源已允许' : '外部资源默认阻止'}</span>
-        </div>
-        {hasExternal && (
-          <div className="external-resource-prompt">
-            <p>此文件请求加载 {info.externalResources.length} 个外部资源。</p>
-            <div>
-              <button className="secondary-action compact" type="button" onClick={onBlockExternal}>
-                保持阻止
-              </button>
-              <button className="primary-action compact" type="button" onClick={onAllowExternalOnce}>
-                允许一次
-              </button>
-              <button className="secondary-action compact" type="button" onClick={trusted ? onRevokeTrust : onTrustFile}>
-                {trusted ? '取消信任' : '信任此文件'}
-              </button>
-            </div>
-          </div>
-        )}
-      </section>
-
       <iframe
         ref={iframeRef}
         className="html-frame"
         title="HTML 阅读视图"
-        sandbox="allow-same-origin"
+        sandbox={scriptsEnabled ? 'allow-same-origin allow-scripts allow-forms allow-popups allow-modals' : 'allow-same-origin'}
         srcDoc={info.srcDoc}
         onLoad={onFrameLoad}
       />
@@ -1711,7 +1815,7 @@ function extractHtmlHeadings(root: Document): HeadingItem[] {
 
 function buildSafeHtmlDocument(
   html: string,
-  { allowExternalResources }: { allowExternalResources: boolean },
+  { allowExternalResources, allowScripts }: { allowExternalResources: boolean; allowScripts: boolean },
 ): HtmlRenderInfo {
   const parser = new DOMParser()
   const parsed = parser.parseFromString(html, 'text/html')
@@ -1739,7 +1843,9 @@ function buildSafeHtmlDocument(
     })
   })
 
-  parsed.querySelectorAll('script,iframe,object,embed,form,meta[http-equiv]').forEach((node) => node.remove())
+  parsed
+    .querySelectorAll(allowScripts ? 'meta[http-equiv]' : 'script,iframe,object,embed,form,meta[http-equiv]')
+    .forEach((node) => node.remove())
 
   parsed.querySelectorAll('*').forEach((element) => {
     Array.from(element.attributes).forEach((attribute) => {
@@ -1753,12 +1859,12 @@ function buildSafeHtmlDocument(
         }
       }
 
-      if (name.startsWith('on')) {
+      if (!allowScripts && name.startsWith('on')) {
         element.removeAttribute(attribute.name)
         return
       }
 
-      if ((name === 'href' || name === 'src') && /^\s*javascript:/i.test(value)) {
+      if (!allowScripts && (name === 'href' || name === 'src') && /^\s*javascript:/i.test(value)) {
         element.removeAttribute(attribute.name)
         return
       }
@@ -1792,6 +1898,9 @@ function buildSafeHtmlDocument(
   const plainText = parsed.body.textContent?.replace(/\n{3,}/g, '\n\n').trim() ?? ''
   const bodyHtml = parsed.body.innerHTML
   const title = parsed.title || 'HTML 文档'
+  parsed.head.querySelectorAll('base').forEach((node) => node.remove())
+  parsed.head.querySelectorAll('title').forEach((node) => node.remove())
+  const headHtml = parsed.head.innerHTML
 
   return {
     srcDoc: `<!doctype html>
@@ -1800,33 +1909,15 @@ function buildSafeHtmlDocument(
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <base target="_blank" />
-  <title>${escapeHtml(title)}</title>
   <style>
-    :root {
-      color: #33413a;
-      background: #fffdf8;
-      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Microsoft YaHei", sans-serif;
-      font-size: 16px;
-      line-height: 1.72;
-    }
-    * { box-sizing: border-box; }
-    body { margin: 0; padding: 18px 20px 108px; overflow-wrap: anywhere; }
-    h1,h2,h3,h4,h5,h6 { color: #111a16; line-height: 1.28; margin: 1.4em 0 .65em; }
-    h1 { font-size: 1.7em; margin-top: 0; }
-    h2 { font-size: 1.42em; }
-    h3 { font-size: 1.16em; }
-    p, ul, ol, blockquote, pre, table { margin: 0 0 16px; }
-    img, video { max-width: 100%; height: auto; border-radius: 8px; }
-    table { display: block; width: 100%; overflow-x: auto; border-collapse: collapse; border: 1px solid #dde5dd; border-radius: 8px; }
-    th, td { padding: 8px 10px; border: 1px solid #dde5dd; white-space: nowrap; }
-    th { background: #f3f6f2; color: #111a16; }
-    pre { padding: 13px; border-radius: 8px; overflow-x: auto; color: #d6eee4; background: #18211d; }
-    code { font-family: SFMono-Regular, Consolas, monospace; }
-    a { color: #138263; text-decoration: none; }
-    blockquote { padding: 10px 12px; border-left: 3px solid #138263; border-radius: 0 8px 8px 0; background: #e3f3ed; }
+    html { -webkit-text-size-adjust: 100%; }
+    body { overflow-wrap: anywhere; }
+    img, video, canvas, svg { max-width: 100%; height: auto; }
     .lp-missing-resource { display: block; margin: 8px 0 14px; padding: 9px 10px; border-radius: 8px; color: #9a5b08; background: #fff1d8; font-size: .86em; }
     mark.search-hit { padding: 0 2px; border-radius: 3px; color: #1f1600; background: #ffd86b; }
   </style>
+  <title>${escapeHtml(title)}</title>
+  ${headHtml}
 </head>
 <body>${bodyHtml}</body>
 </html>`,
@@ -1853,7 +1944,7 @@ function stripExternalCssUrls(css: string) {
 
 const PRINT_CSS = `<style>@media print{body{margin:0;padding:12mm}table{page-break-inside:avoid}pre{white-space:pre-wrap;word-break:break-all}img{max-width:100%;page-break-inside:avoid}h1,h2,h3,h4,h5,h6{page-break-after:avoid}.reader-header,.reader-toolbar,.search-panel,.reader-status,.sheet-backdrop{display:none!important}}</style>`
 
-function buildPrintDocument(title: string, bodyHtml: string, _settings: { themeMode: string }) {
+function buildPrintDocument(title: string, bodyHtml: string) {
   return `<!doctype html>
 <html>
 <head>
