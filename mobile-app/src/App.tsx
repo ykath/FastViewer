@@ -678,6 +678,7 @@ function ReaderPage({
   const contentRef = useRef<HTMLElement | null>(null)
   const scrollRef = useRef<HTMLElement | null>(null)
   const iframeRef = useRef<HTMLIFrameElement | null>(null)
+  const activeDocumentIdRef = useRef<string | null>(null)
   const edgeSwipeRef = useRef({
     active: false,
     startX: 0,
@@ -706,6 +707,9 @@ function ReaderPage({
   const markdownComponents = createMarkdownComponents()
 
   useEffect(() => {
+    if (activeDocumentIdRef.current === document.id) return
+    activeDocumentIdRef.current = document.id
+
     setQuery('')
     setSearchOpen(false)
     setSearchIndex(0)
