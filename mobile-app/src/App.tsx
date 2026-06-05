@@ -10,6 +10,7 @@ import {
   Heart,
   Home,
   ImageDown,
+  ImageOff,
   ListTree,
   Menu,
   Moon,
@@ -27,6 +28,7 @@ import { createElement, useCallback, useEffect, useMemo, useRef, useState } from
 import ReactMarkdown from 'react-markdown'
 import type { Components } from 'react-markdown'
 import remarkGfm from 'remark-gfm'
+import rehypeHighlight from 'rehype-highlight'
 import { Capacitor, registerPlugin } from '@capacitor/core'
 import type { PluginListenerHandle } from '@capacitor/core'
 import './App.css'
@@ -730,7 +732,11 @@ function ReaderPage({
         />
       ) : document.fileType === 'markdown' ? (
         <article className="reader-content markdown-body" ref={contentRef}>
-          <ReactMarkdown remarkPlugins={[remarkGfm]} components={markdownComponents}>
+          <ReactMarkdown
+            remarkPlugins={[remarkGfm]}
+            rehypePlugins={[[rehypeHighlight, { detect: true }]]}
+            components={markdownComponents}
+          >
             {document.content}
           </ReactMarkdown>
         </article>
@@ -1439,11 +1445,7 @@ function createMarkdownComponents(): Components {
     h5: heading(5),
     h6: heading(6),
     table({ children }) {
-      return (
-        <div className="markdown-table-wrap">
-          <table>{children}</table>
-        </div>
-      )
+      return <ScrollableTableWrap>{children}</ScrollableTableWrap>
     },
     a({ children, href }) {
       return (
@@ -1453,9 +1455,65 @@ function createMarkdownComponents(): Components {
       )
     },
     img({ alt, src }) {
-      return <img src={src} alt={alt ?? ''} loading="lazy" />
+      return (
+        <ImgWithFallback src={src ?? ''} alt={alt ?? ''} />
+      )
+    },
+    li({ children, ...props }) {
+      const hasCheckbox =
+        Array.isArray(children) &&
+        children.some(
+          (child) =>
+            typeof child === 'object' &&
+            child !== null &&
+            'type' in child &&
+            child.type === 'input',
+        )
+      return (
+        <li className={hasCheckbox ? 'task-list-item' : undefined} {...props}>
+          {children}
+        </li>
+      )
     },
   }
+}
+
+function ScrollableTableWrap({ children }: { children: React.ReactNode }) {
+  const wrapRef = useRef<HTMLDivElement>(null)
+  const [scrollable, setScrollable] = useState(false)
+
+  useEffect(() => {
+    const el = wrapRef.current
+    if (!el) return
+    const check = () => setScrollable(el.scrollWidth > el.clientWidth + 2)
+    check()
+    const ro = new ResizeObserver(check)
+    ro.observe(el)
+    el.addEventListener('scroll', () => {
+      const atEnd = el.scrollLeft + el.clientWidth >= el.scrollWidth - 2
+      setScrollable(!atEnd)
+    })
+    return () => ro.disconnect()
+  }, [])
+
+  return (
+    <div ref={wrapRef} className={`markdown-table-wrap${scrollable ? ' scrollable' : ''}`}>
+      <table>{children}</table>
+    </div>
+  )
+}
+
+function ImgWithFallback({ src, alt }: { src: string; alt: string }) {
+  const [failed, setFailed] = useState(false)
+  if (failed) {
+    return (
+      <span className="img-fallback">
+        <ImageOff size={20} />
+        <span>{alt || '图片加载失败'}</span>
+      </span>
+    )
+  }
+  return <img src={src} alt={alt} loading="lazy" onError={() => setFailed(true)} />
 }
 
 function childrenToText(children: React.ReactNode): string {

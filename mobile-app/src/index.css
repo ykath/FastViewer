@@ -64,8 +64,28 @@ button:focus-visible {
   outline-offset: 2px;
 }
 
+:root[data-theme='dark'] {
+  --surface: #101512;
+  --surface-muted: #161d19;
+  --reader-surface: #111713;
+  --control: #1d2722;
+  --control-pressed: #26342d;
+  --border: #29362f;
+  --text: #c9d5cf;
+  --text-strong: #f1f6f3;
+  --text-muted: #8b9b92;
+  --accent: #57c9a4;
+  --accent-soft: #17392d;
+  --success-bg: #17392d;
+  --success-text: #87d8bd;
+  --warning-bg: #3b2a12;
+  --warning-text: #f1bc63;
+  --code-bg: #0a0f0c;
+  --code-text: #cfeee2;
+}
+
 @media (prefers-color-scheme: dark) {
-  :root {
+  :root:not([data-theme='light']) {
     --surface: #101512;
     --surface-muted: #161d19;
     --reader-surface: #111713;
