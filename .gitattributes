@@ -15,5 +15,6 @@
 *.gradle text eol=lf
 *.properties text eol=lf
 *.gitignore text eol=lf
+.gitattributes text eol=lf
 gradlew text eol=lf
 *.bat text eol=crlf
