@@ -23,7 +23,7 @@ import {
   Upload,
   X,
 } from 'lucide-react'
-import { createElement, useEffect, useMemo, useRef, useState } from 'react'
+import { createElement, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import ReactMarkdown from 'react-markdown'
 import type { Components } from 'react-markdown'
 import remarkGfm from 'remark-gfm'
@@ -52,6 +52,7 @@ type DocumentRecord = {
   isFavorite: boolean
   inLibrary: boolean
   lastReadPosition: number
+  trustedHtml?: boolean
 }
 
 type HeadingItem = {
@@ -73,6 +74,19 @@ type ExternalFileResult = {
   content?: string
   size?: number
   error?: string
+}
+
+type ExternalResource = {
+  tag: string
+  attr: string
+  url: string
+}
+
+type HtmlRenderInfo = {
+  srcDoc: string
+  headings: HeadingItem[]
+  plainText: string
+  externalResources: ExternalResource[]
 }
 
 type FastViewerFilesPlugin = {
@@ -141,7 +155,8 @@ const seedDocuments: DocumentRecord[] = [
   {
     ...createRecordFromContent({
       fileName: '产品需求说明.html',
-      content: '<h1>产品需求说明</h1><p>HTML 浏览将在 M7 实现。</p>',
+      content:
+        '<!doctype html><html><head><title>产品需求说明</title><style>body{font-family:system-ui}</style></head><body><h1>产品需求说明</h1><p>这是一份 HTML 示例文档。</p><h2>能力范围</h2><table><tr><th>能力</th><th>状态</th></tr><tr><td>沙盒渲染</td><td>已启用</td></tr><tr><td>外部资源</td><td>默认阻止</td></tr></table><pre><code>console.log("script disabled")</code></pre><p><a href="https://example.com">外部链接示例</a></p><script>alert("blocked")</script></body></html>',
       sourceType: '示例',
       lastOpenedAt: new Date(Date.now() - 1000 * 60 * 60 * 26).toISOString(),
     }),
@@ -218,15 +233,8 @@ function App() {
       fileSize: result.size,
     })
 
-    if (record.fileType === 'html') {
-      importDocument(record, false)
-      setErrorMessage('HTML 浏览将在 M7 阶段实现。当前版本已保存文件记录，但只支持 Markdown 阅读。')
-      setView('error')
-      return
-    }
-
     importDocument(record)
-    showToast('已从外部应用打开文件', 'success')
+    showToast(record.fileType === 'html' ? '已安全打开 HTML 文件' : '已从外部应用打开文件', 'success')
   }
 
   const loadExternalLaunchFile = async () => {
@@ -273,13 +281,6 @@ function App() {
         sourceType: '文件选择器',
         fileSize: file.size,
       })
-
-      if (record.fileType === 'html') {
-        importDocument(record, false)
-        setErrorMessage('HTML 浏览将在 M7 阶段实现。当前版本已保存文件记录，但只支持 Markdown 阅读。')
-        setView('error')
-        return
-      }
 
       importDocument(record)
       showToast('文件已打开', 'success')
@@ -533,10 +534,24 @@ function ReaderPage({
   const [tocOpen, setTocOpen] = useState(false)
   const [menuOpen, setMenuOpen] = useState(false)
   const [readerMode, setReaderMode] = useState<ReaderMode>('rendered')
+  const [allowExternalOnce, setAllowExternalOnce] = useState(false)
+  const [htmlFrameVersion, setHtmlFrameVersion] = useState(0)
   const contentRef = useRef<HTMLElement | null>(null)
   const scrollRef = useRef<HTMLElement | null>(null)
+  const iframeRef = useRef<HTMLIFrameElement | null>(null)
 
-  const headings = useMemo(() => extractHeadings(document.content), [document.content])
+  const allowExternalResources = document.fileType === 'html' && (allowExternalOnce || Boolean(document.trustedHtml))
+  const htmlInfo = useMemo(
+    () =>
+      document.fileType === 'html'
+        ? buildSafeHtmlDocument(document.content, { allowExternalResources })
+        : null,
+    [allowExternalResources, document.content, document.fileType],
+  )
+  const headings = useMemo(
+    () => (document.fileType === 'html' ? htmlInfo?.headings ?? [] : extractMarkdownHeadings(document.content)),
+    [document.content, document.fileType, htmlInfo],
+  )
   const markdownComponents = createMarkdownComponents()
 
   useEffect(() => {
@@ -544,13 +559,22 @@ function ReaderPage({
     setSearchOpen(false)
     setSearchIndex(0)
     setReaderMode('rendered')
+    setAllowExternalOnce(false)
     window.setTimeout(() => {
       scrollRef.current?.scrollTo({ top: document.lastReadPosition })
     }, 0)
   }, [document.id, document.lastReadPosition])
 
+  const getSearchContainer = useCallback(() => {
+    if (document.fileType === 'html') {
+      return iframeRef.current?.contentDocument?.body ?? null
+    }
+
+    return contentRef.current
+  }, [document.fileType])
+
   useEffect(() => {
-    const container = contentRef.current
+    const container = getSearchContainer()
     if (!container || readerMode !== 'rendered') {
       setSearchCount(0)
       return
@@ -559,7 +583,7 @@ function ReaderPage({
     setSearchCount(count)
     const target = container.querySelectorAll('mark.search-hit')[searchIndex]
     target?.scrollIntoView({ block: 'center' })
-  }, [query, searchIndex, readerMode, document.content])
+  }, [getSearchContainer, query, searchIndex, readerMode, document.content, htmlFrameVersion, htmlInfo?.srcDoc])
 
   const saveScrollPosition = () => {
     const top = scrollRef.current?.scrollTop ?? 0
@@ -590,7 +614,7 @@ function ReaderPage({
     onShowToast('已保存到文件库', 'success')
   }
 
-  const copyText = async (source = document.content) => {
+  const copyText = async (source = document.fileType === 'html' ? htmlInfo?.plainText ?? document.content : document.content) => {
     try {
       await navigator.clipboard.writeText(source)
       onShowToast('已复制全文', 'success')
@@ -606,6 +630,25 @@ function ReaderPage({
 
   const statusText =
     document.lastReadPosition > 0 ? '已恢复阅读位置' : '从顶部开始'
+
+  const handleHtmlFrameLoad = () => {
+    const frameDocument = iframeRef.current?.contentDocument
+    if (!frameDocument) return
+
+    frameDocument.querySelectorAll('a[href]').forEach((anchor) => {
+      anchor.addEventListener('click', (event) => {
+        const href = (event.currentTarget as HTMLAnchorElement).href
+        if (!href) return
+
+        event.preventDefault()
+        if (window.confirm(`要打开外部链接吗？\n${href}`)) {
+          window.open(href, '_blank', 'noopener,noreferrer')
+        }
+      })
+    })
+
+    setHtmlFrameVersion((version) => version + 1)
+  }
 
   return (
     <section
@@ -664,16 +707,35 @@ function ReaderPage({
         <span>本地处理</span>
       </div>
 
-      {document.fileType !== 'markdown' ? (
-        <UnsupportedDocument document={document} onBack={onBack} />
-      ) : readerMode === 'source' ? (
+      {readerMode === 'source' ? (
         <pre className="source-view">{document.content}</pre>
-      ) : (
+      ) : document.fileType === 'html' && htmlInfo ? (
+        <HtmlReader
+          iframeRef={iframeRef}
+          info={htmlInfo}
+          trusted={Boolean(document.trustedHtml)}
+          allowExternalOnce={allowExternalOnce}
+          onFrameLoad={handleHtmlFrameLoad}
+          onAllowExternalOnce={() => setAllowExternalOnce(true)}
+          onBlockExternal={() => setAllowExternalOnce(false)}
+          onTrustFile={() => {
+            onUpdate({ trustedHtml: true })
+            onShowToast('已信任此 HTML 文件', 'success')
+          }}
+          onRevokeTrust={() => {
+            onUpdate({ trustedHtml: false })
+            setAllowExternalOnce(false)
+            onShowToast('已恢复阻止外部资源', 'success')
+          }}
+        />
+      ) : document.fileType === 'markdown' ? (
         <article className="reader-content markdown-body" ref={contentRef}>
           <ReactMarkdown remarkPlugins={[remarkGfm]} components={markdownComponents}>
             {document.content}
           </ReactMarkdown>
         </article>
+      ) : (
+        <TextReader content={document.content} />
       )}
 
       <footer className="reader-toolbar" aria-label="阅读工具">
@@ -707,7 +769,11 @@ function ReaderPage({
                   className={`toc-item level-${heading.level}`}
                   type="button"
                   onClick={() => {
-                    window.document.getElementById(heading.id)?.scrollIntoView({ block: 'start' })
+                    if (document.fileType === 'html') {
+                      iframeRef.current?.contentDocument?.getElementById(heading.id)?.scrollIntoView({ block: 'start' })
+                    } else {
+                      window.document.getElementById(heading.id)?.scrollIntoView({ block: 'start' })
+                    }
                     setTocOpen(false)
                   }}
                 >
@@ -734,6 +800,22 @@ function ReaderPage({
               onClick={() => setReaderMode(readerMode === 'source' ? 'rendered' : 'source')}
             />
             <MenuAction icon={<Copy size={18} />} label="复制全文" onClick={() => copyText()} />
+            {document.fileType === 'html' && (
+              <MenuAction
+                icon={<ShieldCheck size={18} />}
+                label={document.trustedHtml ? '取消信任此 HTML' : '信任此 HTML'}
+                onClick={() => {
+                  if (document.trustedHtml) {
+                    onUpdate({ trustedHtml: false })
+                    setAllowExternalOnce(false)
+                    onShowToast('已取消信任', 'success')
+                  } else {
+                    onUpdate({ trustedHtml: true })
+                    onShowToast('已信任此 HTML 文件', 'success')
+                  }
+                }}
+              />
+            )}
             <MenuAction icon={<Upload size={18} />} label="导出 PDF（占位）" onClick={() => onShowToast('PDF 导出将在 M11 实现')} />
             <MenuAction icon={<ImageDown size={18} />} label="分享图片（占位）" onClick={() => onShowToast('图片分享将在 M11 实现')} />
             <MenuAction icon={<Share2 size={18} />} label="分享原文件（占位）" onClick={() => onShowToast('原文件分享将在 M11 实现')} />
@@ -744,15 +826,71 @@ function ReaderPage({
   )
 }
 
-function UnsupportedDocument({ document, onBack }: { document: DocumentRecord; onBack: () => void }) {
+function TextReader({ content }: { content: string }) {
+  return <pre className="source-view">{content}</pre>
+}
+
+function HtmlReader({
+  iframeRef,
+  info,
+  trusted,
+  allowExternalOnce,
+  onAllowExternalOnce,
+  onBlockExternal,
+  onTrustFile,
+  onRevokeTrust,
+  onFrameLoad,
+}: {
+  iframeRef: React.RefObject<HTMLIFrameElement | null>
+  info: HtmlRenderInfo
+  trusted: boolean
+  allowExternalOnce: boolean
+  onAllowExternalOnce: () => void
+  onBlockExternal: () => void
+  onTrustFile: () => void
+  onRevokeTrust: () => void
+  onFrameLoad: () => void
+}) {
+  const hasExternal = info.externalResources.length > 0
+
   return (
-    <div className="unsupported-doc">
-      <AlertCircle size={30} />
-      <h2>当前版本暂不支持 {document.fileExtension.toUpperCase()} 阅读</h2>
-      <p>M2-M6 阶段先完成 Markdown 发布测试。HTML 浏览会在 M7 阶段接入安全沙盒。</p>
-      <button className="primary-action compact" type="button" onClick={onBack}>
-        返回首页
-      </button>
+    <div className="html-reader">
+      <section className="html-security-panel">
+        <div className="html-security-title">
+          <ShieldCheck size={18} />
+          <strong>已在安全沙盒中打开</strong>
+        </div>
+        <div className="html-security-tags">
+          <span>脚本已禁用</span>
+          <span>阻止自动跳转</span>
+          <span>{trusted || allowExternalOnce ? '外部资源已允许' : '外部资源默认阻止'}</span>
+        </div>
+        {hasExternal && (
+          <div className="external-resource-prompt">
+            <p>此文件请求加载 {info.externalResources.length} 个外部资源。</p>
+            <div>
+              <button className="secondary-action compact" type="button" onClick={onBlockExternal}>
+                保持阻止
+              </button>
+              <button className="primary-action compact" type="button" onClick={onAllowExternalOnce}>
+                允许一次
+              </button>
+              <button className="secondary-action compact" type="button" onClick={trusted ? onRevokeTrust : onTrustFile}>
+                {trusted ? '取消信任' : '信任此文件'}
+              </button>
+            </div>
+          </div>
+        )}
+      </section>
+
+      <iframe
+        ref={iframeRef}
+        className="html-frame"
+        title="HTML 阅读视图"
+        sandbox="allow-same-origin"
+        srcDoc={info.srcDoc}
+        onLoad={onFrameLoad}
+      />
     </div>
   )
 }
@@ -799,8 +937,8 @@ function SettingsPage({ settings, onSetSettings }: SettingsPageProps) {
         <SettingRow
           icon={<ShieldCheck size={19} />}
           title="HTML 安全沙盒"
-          description="M7 阶段默认禁用脚本和自动跳转"
-          value="预留"
+          description="默认禁用脚本、自动跳转和自动下载"
+          value="启用"
         />
         <SettingRow
           icon={<Archive size={19} />}
@@ -1076,7 +1214,7 @@ function stripUtf8Bom(content: string) {
   return content.charCodeAt(0) === 0xfeff ? content.slice(1) : content
 }
 
-function extractHeadings(markdown: string): HeadingItem[] {
+function extractMarkdownHeadings(markdown: string): HeadingItem[] {
   const used = new Map<string, number>()
   return markdown
     .split(/\r?\n/)
@@ -1093,6 +1231,175 @@ function extractHeadings(markdown: string): HeadingItem[] {
         text,
       }
     })
+}
+
+function extractHtmlHeadings(root: Document): HeadingItem[] {
+  const used = new Map<string, number>()
+  return Array.from(root.body.querySelectorAll('h1,h2,h3,h4,h5,h6')).map((element) => {
+    const text = element.textContent?.trim() || '未命名标题'
+    const baseId = slugify(text)
+    const count = used.get(baseId) ?? 0
+    used.set(baseId, count + 1)
+    const id = count ? `${baseId}-${count}` : baseId
+    element.id = element.id || id
+
+    return {
+      id: element.id,
+      level: Number(element.tagName.slice(1)),
+      text,
+    }
+  })
+}
+
+function buildSafeHtmlDocument(
+  html: string,
+  { allowExternalResources }: { allowExternalResources: boolean },
+): HtmlRenderInfo {
+  const parser = new DOMParser()
+  const parsed = parser.parseFromString(html, 'text/html')
+  const externalResources: ExternalResource[] = []
+
+  const recordExternalResource = (element: Element, attr: string, url: string) => {
+    if (!isExternalUrl(url)) {
+      return
+    }
+
+    externalResources.push({
+      tag: element.tagName.toLowerCase(),
+      attr,
+      url,
+    })
+  }
+
+  parsed.querySelectorAll('script[src], iframe[src], object[data], embed[src]').forEach((element) => {
+    const resourceAttrs = ['src', 'data']
+    resourceAttrs.forEach((attr) => {
+      const value = element.getAttribute(attr)
+      if (value) {
+        recordExternalResource(element, attr, value)
+      }
+    })
+  })
+
+  parsed.querySelectorAll('script,iframe,object,embed,form,meta[http-equiv]').forEach((node) => node.remove())
+
+  parsed.querySelectorAll('*').forEach((element) => {
+    Array.from(element.attributes).forEach((attribute) => {
+      const name = attribute.name.toLowerCase()
+      const value = attribute.value
+
+      if (name === 'style') {
+        collectExternalCssUrls(value).forEach((url) => recordExternalResource(element, 'style', url))
+        if (!allowExternalResources) {
+          element.setAttribute(attribute.name, stripExternalCssUrls(value))
+        }
+      }
+
+      if (name.startsWith('on')) {
+        element.removeAttribute(attribute.name)
+        return
+      }
+
+      if ((name === 'href' || name === 'src') && /^\s*javascript:/i.test(value)) {
+        element.removeAttribute(attribute.name)
+        return
+      }
+
+      if ((name === 'href' || name === 'src') && isExternalUrl(value)) {
+        recordExternalResource(element, name, value)
+
+        if (!allowExternalResources) {
+          element.removeAttribute(attribute.name)
+          element.setAttribute(`data-blocked-${name}`, value)
+          if (element.tagName.toLowerCase() === 'img') {
+            const notice = parsed.createElement('span')
+            notice.className = 'lp-missing-resource'
+            notice.textContent = `外部图片已阻止：${value}`
+            element.insertAdjacentElement('afterend', notice)
+          }
+        }
+      }
+    })
+  })
+
+  parsed.querySelectorAll('style').forEach((element) => {
+    const css = element.textContent ?? ''
+    collectExternalCssUrls(css).forEach((url) => recordExternalResource(element, 'style', url))
+    if (!allowExternalResources) {
+      element.textContent = stripExternalCssUrls(css)
+    }
+  })
+
+  const headings = extractHtmlHeadings(parsed)
+  const plainText = parsed.body.textContent?.replace(/\n{3,}/g, '\n\n').trim() ?? ''
+  const bodyHtml = parsed.body.innerHTML
+  const title = parsed.title || 'HTML 文档'
+
+  return {
+    srcDoc: `<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <base target="_blank" />
+  <title>${escapeHtml(title)}</title>
+  <style>
+    :root {
+      color: #33413a;
+      background: #fffdf8;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Microsoft YaHei", sans-serif;
+      font-size: 16px;
+      line-height: 1.72;
+    }
+    * { box-sizing: border-box; }
+    body { margin: 0; padding: 18px 20px 108px; overflow-wrap: anywhere; }
+    h1,h2,h3,h4,h5,h6 { color: #111a16; line-height: 1.28; margin: 1.4em 0 .65em; }
+    h1 { font-size: 1.7em; margin-top: 0; }
+    h2 { font-size: 1.42em; }
+    h3 { font-size: 1.16em; }
+    p, ul, ol, blockquote, pre, table { margin: 0 0 16px; }
+    img, video { max-width: 100%; height: auto; border-radius: 8px; }
+    table { display: block; width: 100%; overflow-x: auto; border-collapse: collapse; border: 1px solid #dde5dd; border-radius: 8px; }
+    th, td { padding: 8px 10px; border: 1px solid #dde5dd; white-space: nowrap; }
+    th { background: #f3f6f2; color: #111a16; }
+    pre { padding: 13px; border-radius: 8px; overflow-x: auto; color: #d6eee4; background: #18211d; }
+    code { font-family: SFMono-Regular, Consolas, monospace; }
+    a { color: #138263; text-decoration: none; }
+    blockquote { padding: 10px 12px; border-left: 3px solid #138263; border-radius: 0 8px 8px 0; background: #e3f3ed; }
+    .lp-missing-resource { display: block; margin: 8px 0 14px; padding: 9px 10px; border-radius: 8px; color: #9a5b08; background: #fff1d8; font-size: .86em; }
+    mark.search-hit { padding: 0 2px; border-radius: 3px; color: #1f1600; background: #ffd86b; }
+  </style>
+</head>
+<body>${bodyHtml}</body>
+</html>`,
+    headings,
+    plainText,
+    externalResources,
+  }
+}
+
+function isExternalUrl(value: string) {
+  return /^(https?:)?\/\//i.test(value.trim())
+}
+
+function collectExternalCssUrls(css: string) {
+  const matches = css.matchAll(/(?:url\(\s*['"]?|@import\s+['"])((?:https?:)?\/\/[^'")\s;]+)/gi)
+  return Array.from(matches, (match) => match[1])
+}
+
+function stripExternalCssUrls(css: string) {
+  return css
+    .replace(/url\(\s*['"]?(?:https?:)?\/\/[^'")\s;]+['"]?\s*\)/gi, 'none')
+    .replace(/@import\s+['"](?:https?:)?\/\/[^'"]+['"]\s*;?/gi, '')
+}
+
+function escapeHtml(value: string) {
+  return value
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#039;')
 }
 
 function slugify(text: string) {

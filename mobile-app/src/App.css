@@ -613,6 +613,73 @@ mark.search-hit {
   line-height: 1.65;
 }
 
+.html-reader {
+  padding: 12px 18px 96px;
+}
+
+.html-security-panel {
+  margin-bottom: 12px;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+}
+
+.html-security-title {
+  color: var(--text-strong);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 14px;
+}
+
+.html-security-title svg {
+  color: var(--accent);
+}
+
+.html-security-tags {
+  margin-top: 10px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.html-security-tags span {
+  padding: 4px 7px;
+  border-radius: 6px;
+  color: var(--success-text);
+  background: var(--success-bg);
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.external-resource-prompt {
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border);
+}
+
+.external-resource-prompt p {
+  margin: 0 0 10px;
+  color: var(--warning-text);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.external-resource-prompt div {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.html-frame {
+  width: 100%;
+  min-height: calc(100svh - 248px);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--reader-surface);
+}
+
 .reader-content code {
   font-family: var(--mono);
 }
