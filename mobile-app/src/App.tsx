@@ -980,30 +980,21 @@ function ReaderPage({
     setMenuOpen(false)
     try {
       let targetElement: HTMLElement | null = null
+      let canvas: HTMLCanvasElement
 
       if (document.fileType === 'html') {
-        const tempDiv = window.document.createElement('div')
-        tempDiv.style.cssText = 'position:absolute;left:-9999px;top:0;width:375px;'
-        tempDiv.innerHTML = htmlInfo?.srcDoc
-          ? new DOMParser().parseFromString(htmlInfo.srcDoc, 'text/html').body.innerHTML
-          : document.content
-        window.document.body.appendChild(tempDiv)
-        targetElement = tempDiv
+        canvas = await captureHtmlFrameAsCanvas(iframeRef.current, settings.themeMode)
       } else {
         targetElement = contentRef.current
-      }
 
-      if (!targetElement) throw new Error('无法获取内容区域')
+        if (!targetElement) throw new Error('无法获取内容区域')
 
-      const canvas = await html2canvas(targetElement, {
-        useCORS: true,
-        scale: 2,
-        backgroundColor: settings.themeMode === 'dark' ? '#171e1a' : '#fffdf8',
-        windowWidth: 375,
-      })
-
-      if (document.fileType === 'html' && targetElement.parentNode === window.document.body) {
-        targetElement.remove()
+        canvas = await html2canvas(targetElement, {
+          useCORS: true,
+          scale: 2,
+          backgroundColor: settings.themeMode === 'dark' ? '#171e1a' : '#fffdf8',
+          windowWidth: Math.ceil(targetElement.getBoundingClientRect().width || 375),
+        })
       }
 
       const dataUrl = canvas.toDataURL('image/png')
@@ -1940,6 +1931,117 @@ function stripExternalCssUrls(css: string) {
   return css
     .replace(/url\(\s*['"]?(?:https?:)?\/\/[^'")\s;]+['"]?\s*\)/gi, 'none')
     .replace(/@import\s+['"](?:https?:)?\/\/[^'"]+['"]\s*;?/gi, '')
+}
+
+const MAX_EXPORT_CANVAS_EDGE = 32767
+const EXPORT_RESOURCE_WAIT_TIMEOUT_MS = 3000
+
+async function captureHtmlFrameAsCanvas(iframe: HTMLIFrameElement | null, themeMode: ThemeMode) {
+  const frameDocument = iframe?.contentDocument
+  const frameWindow = iframe?.contentWindow
+  const targetElement = frameDocument?.body
+  if (!iframe || !frameDocument || !frameWindow || !targetElement) {
+    throw new Error('无法获取 HTML 绘制区域')
+  }
+
+  await waitForFrameResources(frameDocument)
+
+  const originalHeight = iframe.style.height
+  const originalOverflow = iframe.style.overflow
+
+  try {
+    let { width, height } = measureFrameDocument(frameDocument, iframe)
+    iframe.style.height = `${height}px`
+    iframe.style.overflow = 'hidden'
+
+    await nextAnimationFrame(frameWindow)
+    await nextAnimationFrame(frameWindow)
+
+    ;({ width, height } = measureFrameDocument(frameDocument, iframe))
+    const backgroundColor = resolveFrameBackground(frameDocument, themeMode)
+    const scale = Math.max(1, Math.min(2, MAX_EXPORT_CANVAS_EDGE / Math.max(width, height)))
+
+    return html2canvas(targetElement, {
+      useCORS: true,
+      scale,
+      backgroundColor,
+      windowWidth: width,
+      windowHeight: height,
+      width,
+      height,
+      scrollX: 0,
+      scrollY: 0,
+    })
+  } finally {
+    iframe.style.height = originalHeight
+    iframe.style.overflow = originalOverflow
+  }
+}
+
+async function waitForFrameResources(frameDocument: Document) {
+  await frameDocument.fonts?.ready.catch(() => undefined)
+
+  const images = Array.from(frameDocument.images).filter((image) => !image.complete)
+  await Promise.race([
+    Promise.all(
+      images.map(
+        (image) =>
+          new Promise<void>((resolve) => {
+            image.addEventListener('load', () => resolve(), { once: true })
+            image.addEventListener('error', () => resolve(), { once: true })
+          }),
+      ),
+    ),
+    new Promise<void>((resolve) => {
+      window.setTimeout(resolve, EXPORT_RESOURCE_WAIT_TIMEOUT_MS)
+    }),
+  ])
+}
+
+function measureFrameDocument(frameDocument: Document, iframe: HTMLIFrameElement) {
+  const body = frameDocument.body
+  const root = frameDocument.documentElement
+  const width = Math.ceil(Math.max(
+    iframe.clientWidth,
+    root.clientWidth,
+    root.scrollWidth,
+    body.clientWidth,
+    body.scrollWidth,
+    body.offsetWidth,
+  ))
+  const height = Math.ceil(Math.max(
+    iframe.clientHeight,
+    root.clientHeight,
+    root.scrollHeight,
+    body.clientHeight,
+    body.scrollHeight,
+    body.offsetHeight,
+  ))
+
+  return {
+    width: Math.max(1, width),
+    height: Math.max(1, height),
+  }
+}
+
+function resolveFrameBackground(frameDocument: Document, themeMode: ThemeMode) {
+  const fallback = themeMode === 'dark' ? '#171e1a' : '#fffdf8'
+  const frameWindow = frameDocument.defaultView
+  if (!frameWindow) return fallback
+
+  const bodyColor = frameWindow.getComputedStyle(frameDocument.body).backgroundColor
+  if (bodyColor && bodyColor !== 'rgba(0, 0, 0, 0)' && bodyColor !== 'transparent') return bodyColor
+
+  const rootColor = frameWindow.getComputedStyle(frameDocument.documentElement).backgroundColor
+  if (rootColor && rootColor !== 'rgba(0, 0, 0, 0)' && rootColor !== 'transparent') return rootColor
+
+  return fallback
+}
+
+function nextAnimationFrame(frameWindow: Window) {
+  return new Promise<void>((resolve) => {
+    frameWindow.requestAnimationFrame(() => resolve())
+  })
 }
 
 const PRINT_CSS = `<style>@media print{body{margin:0;padding:12mm}table{page-break-inside:avoid}pre{white-space:pre-wrap;word-break:break-all}img{max-width:100%;page-break-inside:avoid}h1,h2,h3,h4,h5,h6{page-break-after:avoid}.reader-header,.reader-toolbar,.search-panel,.reader-status,.sheet-backdrop{display:none!important}}</style>`
