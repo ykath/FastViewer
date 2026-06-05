@@ -41,10 +41,14 @@ if %errorlevel% neq 0 (echo ERROR: gradle build failed & exit /b 1)
 echo.
 
 set "APK_PATH=%MOBILE_APP%\android\app\build\outputs\apk\debug\app-debug.apk"
+set "LIGHTPAGE_APK=%MOBILE_APP%\android\app\build\outputs\apk\debug\LightPage.apk"
 if exist "%APK_PATH%" (
+    copy /Y "%APK_PATH%" "%LIGHTPAGE_APK%" >nul
+    if %errorlevel% neq 0 (echo ERROR: failed to create LightPage.apk & exit /b 1)
     echo ============================================
     echo   BUILD SUCCESS
-    echo   APK: %APK_PATH%
+    echo   APK: %LIGHTPAGE_APK%
+    echo   Original: %APK_PATH%
     echo ============================================
 ) else (
     echo ERROR: APK not found at expected path
