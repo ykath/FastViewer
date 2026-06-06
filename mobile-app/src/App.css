@@ -285,11 +285,12 @@
 }
 
 .page-reader {
-  padding: calc(66px + env(safe-area-inset-top)) 0 0;
+  padding: calc(58px + env(safe-area-inset-top)) 0 0;
   background: var(--reader-surface);
   height: 100svh;
   overflow-y: auto;
   overscroll-behavior-x: contain;
+  overscroll-behavior-y: none;
   touch-action: pan-y;
 }
 
@@ -335,12 +336,13 @@
 }
 
 .reader-status {
-  margin: 12px 18px 0;
+  margin: 2px 18px 0;
   min-height: 34px;
   padding: 0 11px;
   border-radius: 8px;
   color: var(--text-muted);
-  background: var(--surface-muted);
+  background: color-mix(in srgb, var(--surface-muted) 96%, transparent);
+  backdrop-filter: blur(12px);
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -774,6 +776,7 @@ mark.search-hit {
   border-radius: 0;
   background: var(--reader-surface);
   display: block;
+  overflow: hidden;
 }
 
 .reader-content code {

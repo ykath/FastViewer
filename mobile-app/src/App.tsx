@@ -236,6 +236,10 @@ function App() {
   }, [settings.themeMode])
 
   useEffect(() => {
+    resetViewportScroll()
+  }, [view])
+
+  useEffect(() => {
     if (!activeDocumentId && documents[0]) {
       setActiveDocumentId(documents[0].id)
     }
@@ -296,7 +300,7 @@ function App() {
   const processBytes = (bytes: Uint8Array, fileName: string, sourceType: string, sourceUri?: string, fileSize?: number) => {
     const result = detectAndDecode(bytes)
     const rawBase64 = bytes.length <= FILE_SIZE_RAW_LIMIT
-      ? btoa(String.fromCharCode(...bytes))
+      ? bytesToBase64(bytes)
       : undefined
 
     const record = createRecordFromBytes({
@@ -761,6 +765,7 @@ function ReaderPage({
   const contentRef = useRef<HTMLElement | null>(null)
   const scrollRef = useRef<HTMLElement | null>(null)
   const iframeRef = useRef<HTMLIFrameElement | null>(null)
+  const htmlResizeCleanupRef = useRef<(() => void) | null>(null)
   const activeDocumentIdRef = useRef<string | null>(null)
   const edgeSwipeRef = useRef({
     active: false,
@@ -786,6 +791,9 @@ function ReaderPage({
     },
     [allowExternalResources, allowScripts, document.archiveRelativePath, document.archiveResources, document.content, document.fileName, document.fileType],
   )
+
+  useEffect(() => () => htmlResizeCleanupRef.current?.(), [])
+
   const headings = useMemo(
     () => (document.fileType === 'html' ? htmlInfo?.headings ?? [] : extractMarkdownHeadings(document.content)),
     [document.content, document.fileType, htmlInfo],
@@ -1117,8 +1125,30 @@ function ReaderPage({
     document.lastReadPosition > 0 ? '已恢复阅读位置' : '从顶部开始'
 
   const handleHtmlFrameLoad = () => {
-    const frameDocument = iframeRef.current?.contentDocument
+    const iframe = iframeRef.current
+    const frameDocument = iframe?.contentDocument
     if (!frameDocument) return
+
+    htmlResizeCleanupRef.current?.()
+    iframe.style.height = ''
+
+    const resizeFrame = () => {
+      if (!iframe) return
+      const { height } = measureFrameDocument(frameDocument, iframe)
+      iframe.style.height = `${height}px`
+    }
+
+    resizeFrame()
+    window.setTimeout(resizeFrame, 120)
+    window.setTimeout(resizeFrame, 600)
+
+    const resizeObserver = new ResizeObserver(resizeFrame)
+    resizeObserver.observe(frameDocument.documentElement)
+    resizeObserver.observe(frameDocument.body)
+
+    const disconnectResizeObserver = () => resizeObserver.disconnect()
+    htmlResizeCleanupRef.current = disconnectResizeObserver
+    iframe.addEventListener('load', disconnectResizeObserver, { once: true })
 
     if (!allowScripts) {
       frameDocument.querySelectorAll('a[href]').forEach((anchor) => {
@@ -1455,6 +1485,7 @@ function HtmlReader({
         title="HTML 阅读视图"
         sandbox={scriptsEnabled ? 'allow-same-origin allow-scripts allow-forms allow-popups allow-modals' : 'allow-same-origin'}
         srcDoc={info.srcDoc}
+        scrolling="no"
         onLoad={onFrameLoad}
       />
     </div>
@@ -1870,6 +1901,12 @@ function bytesToBase64(bytes: Uint8Array) {
     binary += String.fromCharCode(...bytes.subarray(index, index + chunkSize))
   }
   return btoa(binary)
+}
+
+function resetViewportScroll() {
+  window.scrollTo({ left: 0, top: 0, behavior: 'auto' })
+  document.documentElement.scrollTop = 0
+  document.body.scrollTop = 0
 }
 
 function rewriteRelativeResources(
