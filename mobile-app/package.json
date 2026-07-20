@@ -1,12 +1,17 @@
 {
   "name": "mobile-app",
   "private": true,
-  "version": "0.0.0",
+  "version": "1.1.0",
   "type": "module",
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",
     "lint": "eslint .",
+    "test": "vitest run --exclude e2e/**",
+    "test:watch": "vitest --exclude e2e/**",
+    "test:e2e": "playwright test",
+    "benchmark:fixtures": "node scripts/generate-benchmark-fixtures.mjs",
+    "check:bundle": "node scripts/check-bundle-budget.mjs",
     "preview": "vite preview"
   },
   "dependencies": {
@@ -16,17 +21,21 @@
     "@capacitor/core": "^8.4.0",
     "@capacitor/filesystem": "^8.1.2",
     "@capacitor/share": "^8.0.1",
+    "hast-util-to-text": "^4.0.2",
     "highlight.js": "^11.11.1",
     "html2canvas-pro": "^2.0.4",
+    "lowlight": "^3.3.0",
     "lucide-react": "^1.17.0",
     "react": "^19.2.6",
     "react-dom": "^19.2.6",
     "react-markdown": "^10.1.0",
-    "rehype-highlight": "^7.0.2",
-    "remark-gfm": "^4.0.1"
+    "remark-gfm": "^4.0.1",
+    "unist-util-visit": "^5.1.0"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
+    "@playwright/test": "^1.61.1",
+    "@testing-library/react": "^16.3.2",
     "@types/node": "^24.12.3",
     "@types/react": "^19.2.14",
     "@types/react-dom": "^19.2.3",
@@ -34,9 +43,12 @@
     "eslint": "^10.3.0",
     "eslint-plugin-react-hooks": "^7.1.1",
     "eslint-plugin-react-refresh": "^0.5.2",
+    "fake-indexeddb": "^6.2.5",
     "globals": "^17.6.0",
+    "jsdom": "^29.1.1",
     "typescript": "~6.0.2",
     "typescript-eslint": "^8.59.2",
-    "vite": "^8.0.12"
+    "vite": "^8.0.12",
+    "vitest": "^4.1.10"
   }
 }

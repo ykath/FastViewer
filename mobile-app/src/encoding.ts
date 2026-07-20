@@ -92,36 +92,10 @@ function detectBom(bytes: Uint8Array): { encoding: EncodingLabel; bomLength: num
 }
 
 function isValidUtf8(bytes: Uint8Array): boolean {
-  let i = 0
-  let hasMultibyte = false
-  while (i < bytes.length) {
-    const b = bytes[i]
-    if (b <= 0x7f) {
-      i++
-      continue
-    }
-
-    let expectedContinuation: number
-    if ((b & 0xe0) === 0xc0) {
-      expectedContinuation = 1
-    } else if ((b & 0xf0) === 0xe0) {
-      expectedContinuation = 2
-    } else if ((b & 0xf8) === 0xf0) {
-      expectedContinuation = 3
-    } else {
-      return false
-    }
-
-    if (i + expectedContinuation >= bytes.length) return false
-
-    for (let j = 1; j <= expectedContinuation; j++) {
-      if ((bytes[i + j] & 0xc0) !== 0x80) return false
-    }
-
-    hasMultibyte = true
-    i += 1 + expectedContinuation
+  try {
+    new TextDecoder('utf-8', { fatal: true }).decode(bytes)
+    return true
+  } catch {
+    return false
   }
-
-  // Pure ASCII is also valid UTF-8
-  return hasMultibyte || true
 }

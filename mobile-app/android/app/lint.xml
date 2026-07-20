@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<lint>
+    <!-- Capacitor 通过约定名称/反射使用部分模板资源，静态分析会误报未引用；Release 仍由 shrinkResources 二次裁剪。 -->
+    <issue id="UnusedResources" severity="ignore" />
+    <!-- 启动图和多密度图标由 Capacitor 原生资源生成流程维护，以下检查不影响运行、安全或自适应图标加载。 -->
+    <issue id="IconDipSize" severity="ignore" />
+    <issue id="IconDuplicates" severity="ignore" />
+    <issue id="IconDuplicatesConfig" severity="ignore" />
+    <issue id="IconLauncherShape" severity="ignore" />
+    <issue id="IconLocation" severity="ignore" />
+    <!-- drawable-v24 来自 Android 模板；minSdk 24 下保留可避免重新生成资源时反复产生差异。 -->
+    <issue id="ObsoleteSdkInt" severity="ignore" />
+</lint>
