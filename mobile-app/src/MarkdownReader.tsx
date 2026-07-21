@@ -1,28 +1,39 @@
-import { createElement, useEffect, useMemo, useRef, useState } from 'react'
+import { createElement, isValidElement, memo, useEffect, useMemo, useRef, useState } from 'react'
 import type React from 'react'
 import { ImageOff } from 'lucide-react'
 import ReactMarkdown, { defaultUrlTransform } from 'react-markdown'
 import type { Components } from 'react-markdown'
+import rehypeKatex from 'rehype-katex'
 import remarkGfm from 'remark-gfm'
+import remarkMath from 'remark-math'
+import katexStyles from 'katex/dist/katex.min.css?inline'
+import MermaidDiagram from './MermaidDiagram'
 import rehypeCodeHighlight from './rehype-code-highlight'
+import remarkDisplayMath from './remark-display-math'
+import type { ThemeMode } from './reader-settings'
 
 type MarkdownReaderProps = {
   content: string
   documentPath?: string
   resources?: Record<string, string>
   contentRef: React.RefObject<HTMLElement | null>
+  themeMode: ThemeMode
+  onOpenExternalLink?: (url: string) => void
 }
 
-export default function MarkdownReader({ content, documentPath, resources, contentRef }: MarkdownReaderProps) {
+function MarkdownReader({ content, documentPath, resources, contentRef, themeMode, onOpenExternalLink }: MarkdownReaderProps) {
   const components = useMemo(
-    () => createMarkdownComponents(documentPath, resources),
-    [documentPath, resources],
+    () => createMarkdownComponents(documentPath, resources, themeMode, onOpenExternalLink),
+    // Content changes intentionally reset the per-render duplicate-heading counters.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [content, documentPath, resources, themeMode, onOpenExternalLink],
   )
   return (
     <article className="reader-content markdown-body" ref={contentRef}>
+      <style data-search-exclude="true">{katexStyles}</style>
       <ReactMarkdown
-        remarkPlugins={[remarkGfm]}
-        rehypePlugins={[rehypeCodeHighlight]}
+        remarkPlugins={[remarkGfm, [remarkMath, { singleDollarTextMath: true }], remarkDisplayMath]}
+        rehypePlugins={[rehypeCodeHighlight, [rehypeKatex, { throwOnError: false, trust: false }]]}
         components={components}
         urlTransform={markdownUrlTransform}
       >
@@ -32,7 +43,14 @@ export default function MarkdownReader({ content, documentPath, resources, conte
   )
 }
 
-function createMarkdownComponents(documentPath?: string, resources?: Record<string, string>): Components {
+export default memo(MarkdownReader)
+
+function createMarkdownComponents(
+  documentPath?: string,
+  resources?: Record<string, string>,
+  themeMode: ThemeMode = 'light',
+  onOpenExternalLink?: (url: string) => void,
+): Components {
   const used = new Map<string, number>()
   const documentDir = dirname(documentPath ?? '')
   const resolveResource = (src: string) => {
@@ -62,8 +80,31 @@ function createMarkdownComponents(documentPath?: string, resources?: Record<stri
     table({ children }) {
       return <ScrollableTableWrap>{children}</ScrollableTableWrap>
     },
+    pre({ children }) {
+      return isValidElement(children) && children.type === MermaidDiagram ? children : <pre>{children}</pre>
+    },
+    code({ children, className, ...props }) {
+      const language = /(?:^|\s)language-([^\s]+)/.exec(className ?? '')?.[1]?.toLowerCase()
+      if (language === 'mermaid') {
+        return <MermaidDiagram source={String(children).replace(/\n$/, '')} themeMode={themeMode} />
+      }
+      return <code className={className} {...props}>{children}</code>
+    },
     a({ children, href }) {
-      return <a href={href} target="_blank" rel="noreferrer">{children}</a>
+      const external = Boolean(href && /^https?:\/\//i.test(href))
+      return (
+        <a
+          href={href}
+          target="_blank"
+          rel="noreferrer"
+          onClick={external && onOpenExternalLink ? (event) => {
+            event.preventDefault()
+            onOpenExternalLink(href ?? '')
+          } : undefined}
+        >
+          {children}
+        </a>
+      )
     },
     img({ alt, src }) {
       return <ImgWithFallback src={resolveResource(src ?? '')} alt={alt ?? ''} />

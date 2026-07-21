@@ -45,7 +45,7 @@ export default function rehypeCodeHighlight() {
         .map((className) => /^lang(?:uage)?-(.+)$/.exec(className)?.[1])
         .find(Boolean)
       if (!language || !lowlight.registered(language)) return
-      const result = lowlight.highlight(language, toText(node))
+      const result = lowlight.highlight(language, toText(node, { whitespace: 'pre' }))
       node.children = result.children as ElementContent[]
       node.properties.className = [...classes, 'hljs', `language-${language}`]
     })

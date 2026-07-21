@@ -41,6 +41,8 @@ import { buildSafeHtmlDocument, extractMarkdownHeadings, rewriteRelativeResource
 import type { HeadingItem, HtmlRenderInfo } from './html-processing'
 import { DEFAULT_READER_SETTINGS, nextThemePreference, themePreferenceLabel } from './reader-settings'
 import type { ReaderSettings, ThemeMode } from './reader-settings'
+import { desktopPlatform } from './desktop-platform'
+import type { DesktopOpenRequest } from './desktop-platform'
 import './App.css'
 
 const MarkdownReader = lazy(() => import('./MarkdownReader'))
@@ -228,6 +230,7 @@ function App() {
   const [pasteDraft, setPasteDraft] = useState<string | null>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
   const archiveCleanupStartedRef = useRef(false)
+  const isDesktop = desktopPlatform.isDesktop()
 
   const activeDocument = documents.find((doc) => doc.id === activeDocumentId) ?? documents[0]
 
@@ -245,6 +248,10 @@ function App() {
   useEffect(() => {
     document.documentElement.dataset.theme = resolvedTheme
   }, [resolvedTheme])
+
+  useEffect(() => {
+    desktopPlatform.applyRuntimeMarker()
+  }, [])
 
   useEffect(() => {
     if (!documentsHydrated || !Capacitor.isNativePlatform() || archiveCleanupStartedRef.current) return
@@ -339,6 +346,30 @@ function App() {
 
     const displayType = record.fileType === 'html' ? '已安全打开 HTML 文件' : '文件已打开'
     showToast(displayType, 'success')
+  }
+
+  const importDesktopRequest = async (request: DesktopOpenRequest) => {
+    const startedAt = startPerformanceSpan()
+    if (request.size >= FILE_SIZE_DANGER) {
+      setView('loading')
+      const action = await checkFileSizeAndConfirm(request.size)
+      if (action === 'cancel') {
+        setView('home')
+        return
+      }
+    } else if (request.size >= FILE_SIZE_WARNING) {
+      showToast(`文件较大（${formatBytes(request.size)}），渲染可能较慢`, 'warning')
+    }
+
+    setView('loading')
+    try {
+      const bytes = await desktopPlatform.readDocument(request)
+      const sourceType = request.source === 'picker' ? 'Windows 文件选择器' : 'Windows 资源管理器'
+      await processBytes(bytes, request.fileName, sourceType, request.path, request.size, startedAt)
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Windows 文件读取失败'
+      showError('UNKNOWN', message)
+    }
   }
 
   const importArchiveDocuments = async (result: ExternalFileResult) => {
@@ -495,6 +526,34 @@ function App() {
   }, [])
 
   useEffect(() => {
+    if (!isDesktop) return undefined
+    let disposed = false
+    let unlisten: (() => void) | undefined
+
+    void desktopPlatform.listenForOpenRequests(importDesktopRequest).then(async (removeListener) => {
+      if (disposed) {
+        removeListener()
+        return
+      }
+      unlisten = removeListener
+      const pending = await desktopPlatform.takePendingOpenRequests()
+      for (const request of pending) {
+        if (disposed) break
+        await importDesktopRequest(request)
+      }
+    }).catch((error) => {
+      if (!disposed) showError('UNKNOWN', error instanceof Error ? error.message : 'Windows 文件关联初始化失败')
+    })
+
+    return () => {
+      disposed = true
+      unlisten?.()
+    }
+    // The desktop bridge owns event serialization and is initialized once per app mount.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isDesktop])
+
+  useEffect(() => {
     if (!Capacitor.isNativePlatform()) return undefined
 
     let handle: PluginListenerHandle | undefined
@@ -562,6 +621,15 @@ function App() {
   }
 
   const openFilePicker = async () => {
+    if (isDesktop) {
+      try {
+        const request = await desktopPlatform.pickDocument()
+        if (request) await importDesktopRequest(request)
+      } catch (error) {
+        showError('UNKNOWN', error instanceof Error ? error.message : 'Windows 文件选择失败')
+      }
+      return
+    }
     if (!Capacitor.isNativePlatform()) {
       fileInputRef.current?.click()
       return
@@ -979,6 +1047,7 @@ function ReaderPage({
   onShowToast,
   onSetSettings,
 }: ReaderPageProps) {
+  const isDesktop = desktopPlatform.isDesktop()
   const [searchOpen, setSearchOpen] = useState(false)
   const [query, setQuery] = useState('')
   const [debouncedQuery, setDebouncedQuery] = useState('')
@@ -1015,6 +1084,9 @@ function ReaderPage({
     lastX: 0,
     lastY: 0,
   })
+  const handleOpenExternalLink = useCallback((url: string) => {
+    void desktopPlatform.openExternalLink(url)
+  }, [])
 
   const allowScripts = document.fileType === 'html' && Boolean(document.allowHtmlScripts ?? document.trustedHtml)
   const allowForms = document.fileType === 'html' && Boolean(document.allowHtmlForms)
@@ -1380,6 +1452,14 @@ function ReaderPage({
     setExporting(true)
     setMenuOpen(false)
     try {
+      if (isDesktop) {
+        const bytes = document.rawBase64
+          ? base64ToBytes(document.rawBase64)
+          : new TextEncoder().encode(document.content)
+        const saved = await desktopPlatform.saveOriginal(bytes, document.fileName)
+        if (saved) onShowToast('原文件已导出', 'success')
+        return
+      }
       if (!Capacitor.isNativePlatform()) {
         const blob = document.rawBase64
           ? new Blob([base64ToBytes(document.rawBase64).buffer as ArrayBuffer], { type: inferDocumentMime(document) })
@@ -1519,6 +1599,22 @@ function ReaderPage({
       }
 
       if (!Capacitor.isNativePlatform()) {
+        if (isDesktop) {
+          const baseName = document.fileName.replace(/\.[^.]+$/, '')
+          const imageFiles = await Promise.all(outputCanvases.map(async (outputCanvas, index) => ({
+            fileName: `${baseName}${outputCanvases.length > 1 ? `-${index + 1}` : ''}.png`,
+            bytes: await canvasToPngBytes(outputCanvas),
+          })))
+          const saved = await desktopPlatform.saveImages(imageFiles)
+          if (!saved) return
+          finishPerformanceSpan('image-export', exportStartedAt, {
+            mode,
+            pages: outputCanvases.length,
+            pixels: outputCanvases.reduce((total, item) => total + item.width * item.height, 0),
+          })
+          onShowToast(`已导出 ${outputCanvases.length} 张图片`, 'success')
+          return
+        }
         outputCanvases.forEach((outputCanvas, index) => {
           const a = window.document.createElement('a')
           a.href = outputCanvas.toDataURL('image/png')
@@ -1611,7 +1707,7 @@ function ReaderPage({
 
           event.preventDefault()
           if (window.confirm(`要打开外部链接吗？\n${href}`)) {
-            window.open(href, '_blank', 'noopener,noreferrer')
+            void desktopPlatform.openExternalLink(href)
           }
         })
       })
@@ -1789,6 +1885,8 @@ function ReaderPage({
               documentPath={document.archiveRelativePath ?? document.fileName}
               resources={document.archiveResources}
               contentRef={contentRef}
+              themeMode={resolvedTheme}
+              onOpenExternalLink={handleOpenExternalLink}
             />
           </Suspense>
         </RenderErrorBoundary>
@@ -1909,7 +2007,11 @@ function ReaderPage({
               label={exporting ? '生成中...' : '分享图片'}
               onClick={() => { setMenuOpen(false); setImageExportOpen(true) }}
             />
-            <MenuAction icon={<Share2 size={18} />} label={exporting ? '分享中...' : '分享原文件'} onClick={shareOriginalFile} />
+            <MenuAction
+              icon={<Share2 size={18} />}
+              label={exporting ? (isDesktop ? '导出中...' : '分享中...') : (isDesktop ? '导出原文件' : '分享原文件')}
+              onClick={shareOriginalFile}
+            />
           </div>
         </Sheet>
       )}
@@ -2536,6 +2638,18 @@ function calculateExportScale(width: number, height: number) {
   return Math.max(0.01, Math.min(2, edgeScale, pixelScale))
 }
 
+function canvasToPngBytes(canvas: HTMLCanvasElement) {
+  return new Promise<Uint8Array>((resolve, reject) => {
+    canvas.toBlob((blob) => {
+      if (!blob) {
+        reject(new Error('无法生成 PNG 图片'))
+        return
+      }
+      void blob.arrayBuffer().then((buffer) => resolve(new Uint8Array(buffer)), reject)
+    }, 'image/png')
+  })
+}
+
 function cropCanvas(source: HTMLCanvasElement, top: number, height: number) {
   const output = document.createElement('canvas')
   output.width = source.width
@@ -2740,7 +2854,14 @@ function highlightMatches(container: HTMLElement, query: string) {
   const needle = query.trim()
   if (!needle) return []
 
-  const walker = document.createTreeWalker(container, NodeFilter.SHOW_TEXT)
+  const walker = document.createTreeWalker(container, NodeFilter.SHOW_TEXT, {
+    acceptNode(node) {
+      const parent = node.parentElement
+      return parent?.closest('style, script, [data-search-exclude="true"], .katex')
+        ? NodeFilter.FILTER_REJECT
+        : NodeFilter.FILTER_ACCEPT
+    },
+  })
   const textNodes: Text[] = []
   while (walker.nextNode()) {
     const node = walker.currentNode

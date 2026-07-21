@@ -1,0 +1,60 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "LightPage",
+  "version": "../package.json",
+  "identifier": "com.fastviewer.app",
+  "build": {
+    "beforeDevCommand": "npm run dev -- --host 127.0.0.1 --port 1420",
+    "devUrl": "http://127.0.0.1:1420",
+    "beforeBuildCommand": "npm run build",
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "windows": [
+      {
+        "label": "main",
+        "title": "轻页",
+        "width": 1100,
+        "height": 760,
+        "minWidth": 720,
+        "minHeight": 520,
+        "center": true,
+        "resizable": true
+      }
+    ],
+    "security": {
+      "csp": null
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": ["nsis"],
+    "publisher": "FastViewer",
+    "category": "Productivity",
+    "shortDescription": "轻量 Markdown 与 HTML 阅读器",
+    "longDescription": "轻页是一款本地优先的 Markdown 与 HTML 阅读器。",
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.ico"
+    ],
+    "fileAssociations": [
+      {
+        "ext": ["md", "markdown", "mdown"],
+        "name": "Markdown Document",
+        "description": "Markdown 文档",
+        "role": "Viewer"
+      }
+    ],
+    "windows": {
+      "webviewInstallMode": {
+        "type": "downloadBootstrapper"
+      },
+      "nsis": {
+        "installMode": "currentUser"
+      }
+    }
+  }
+}
+

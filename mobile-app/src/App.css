@@ -795,6 +795,73 @@
   border-radius: 0;
   color: inherit;
   font-size: inherit;
+  white-space: pre;
+}
+
+.markdown-body .katex {
+  font-size: 1.06em;
+}
+
+.markdown-body .katex-display {
+  margin: 18px 0;
+  padding: 4px 0 8px;
+  overflow-x: auto;
+  overflow-y: hidden;
+  -webkit-overflow-scrolling: touch;
+}
+
+.mermaid-diagram {
+  margin: 18px 0;
+  padding: 14px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface-muted);
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+}
+
+.mermaid-render-host {
+  width: 0;
+  height: 0;
+  overflow: hidden;
+  position: absolute;
+  pointer-events: none;
+}
+
+.mermaid-status {
+  min-height: 96px;
+  color: var(--text-muted);
+  display: grid;
+  place-items: center;
+  font-size: 13px;
+}
+
+.mermaid-svg {
+  width: max-content;
+  min-width: 100%;
+}
+
+.mermaid-svg svg {
+  width: auto !important;
+  max-width: none !important;
+  height: auto;
+  margin: 0 auto;
+  display: block;
+}
+
+.mermaid-error {
+  color: var(--warning-text);
+  display: grid;
+  gap: 7px;
+  font-size: 13px;
+}
+
+.mermaid-error > span {
+  overflow-wrap: anywhere;
+}
+
+.reader-content .mermaid-error pre {
+  margin: 4px 0 0;
 }
 
 mark.search-hit {
@@ -1608,5 +1675,52 @@ mark.search-hit.active {
   .bottom-nav {
     max-width: 430px;
     margin: 0 auto;
+  }
+}
+
+@media (min-width: 720px) {
+  html[data-runtime='desktop'] .app-shell {
+    max-width: none;
+    margin: 0;
+    border-inline: 0;
+  }
+
+  html[data-runtime='desktop'] .page-home,
+  html[data-runtime='desktop'] .page-settings,
+  html[data-runtime='desktop'] .page-error,
+  html[data-runtime='desktop'] .page-loading {
+    width: min(100%, 960px);
+    margin-inline: auto;
+    padding-inline: 32px;
+  }
+
+  html[data-runtime='desktop'] .reader-header {
+    width: 100%;
+    padding-inline: 18px;
+  }
+
+  html[data-runtime='desktop'] .reader-toolbar {
+    right: 18px;
+  }
+
+  html[data-runtime='desktop'] .bottom-nav {
+    right: 50%;
+    left: 50%;
+    width: min(100%, 960px);
+    max-width: none;
+    margin: 0;
+    transform: translateX(-50%);
+    border-inline: 1px solid var(--border);
+    border-radius: 12px 12px 0 0;
+  }
+
+  html[data-runtime='desktop'] button,
+  html[data-runtime='desktop'] a {
+    -webkit-tap-highlight-color: transparent;
+  }
+
+  html[data-runtime='desktop'] button:hover:not(:disabled),
+  html[data-runtime='desktop'] .file-row:hover {
+    filter: brightness(0.985);
   }
 }

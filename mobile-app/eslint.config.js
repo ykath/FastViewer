@@ -13,6 +13,7 @@ export default defineConfig([
     'android/app/build',
     'android/app/src/main/assets',
     'android/capacitor-cordova-android-plugins/build',
+    'src-tauri/target',
   ]),
   {
     files: ['**/*.{ts,tsx}'],
