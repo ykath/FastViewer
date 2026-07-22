@@ -3,6 +3,7 @@ import { createRef } from 'react'
 import { cleanup, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import MarkdownReader from './MarkdownReader'
+import { extractMarkdownHeadings } from './html-processing'
 
 const mermaidInitializeMock = vi.fn()
 const mermaidRenderMock = vi.fn()
@@ -25,6 +26,21 @@ beforeEach(() => {
 })
 
 describe('MarkdownReader', () => {
+  it('行内代码等嵌套格式生成与目录一致的标题锚点', () => {
+    const content = '## 2.1 CLI 命令行接口 (`cli.py`) 与 **配置**'
+    const [heading] = extractMarkdownHeadings(content)
+    const { container } = render(
+      <MarkdownReader
+        content={content}
+        contentRef={createRef<HTMLElement>()}
+        themeMode="light"
+      />,
+    )
+
+    expect(container.querySelector('h2')?.id).toBe(heading.id)
+    expect(container.querySelector('h2')?.textContent).toBe('2.1 CLI 命令行接口 (cli.py) 与 配置')
+  })
+
   it('绘制行内和块级公式，并把本地 KaTeX 样式包含在可导出内容中', () => {
     const contentRef = createRef<HTMLElement>()
     const { container } = render(

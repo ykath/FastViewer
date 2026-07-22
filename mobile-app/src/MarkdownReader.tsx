@@ -192,5 +192,6 @@ function slugify(text: string) {
 function childrenToText(children: React.ReactNode): string {
   if (typeof children === 'string' || typeof children === 'number') return String(children)
   if (Array.isArray(children)) return children.map(childrenToText).join('')
+  if (isValidElement<{ children?: React.ReactNode }>(children)) return childrenToText(children.props.children)
   return ''
 }
