@@ -23,6 +23,10 @@
   opacity: 0;
 }
 
+.desktop-only {
+  display: none;
+}
+
 .page {
   min-height: calc(100svh - 74px - env(safe-area-inset-bottom));
   padding: calc(16px + env(safe-area-inset-top)) 18px 24px;
@@ -1685,33 +1689,290 @@ mark.search-hit.active {
     border-inline: 0;
   }
 
+  html[data-runtime='desktop'] .desktop-only {
+    display: initial;
+  }
+
+  html[data-runtime='desktop'] .mobile-only {
+    display: none !important;
+  }
+
+  html[data-runtime='desktop'] .app-main {
+    min-height: 100svh;
+    margin-left: 92px;
+    padding-bottom: 0;
+  }
+
   html[data-runtime='desktop'] .page-home,
   html[data-runtime='desktop'] .page-settings,
   html[data-runtime='desktop'] .page-error,
   html[data-runtime='desktop'] .page-loading {
-    width: min(100%, 960px);
+    width: min(100%, 1200px);
     margin-inline: auto;
-    padding-inline: 32px;
+    padding: 40px 48px;
+  }
+
+  html[data-runtime='desktop'] .page-reader {
+    min-height: 100svh;
+    height: 100svh;
+    padding-top: 64px;
   }
 
   html[data-runtime='desktop'] .reader-header {
-    width: 100%;
-    padding-inline: 18px;
+    left: 92px;
+    width: calc(100% - 92px);
+    min-height: 64px;
+    padding: 0 24px 0 18px;
+    transform: none;
+  }
+
+  html[data-runtime='desktop'] .reader-title h1 {
+    font-size: 16px;
+  }
+
+  html[data-runtime='desktop'] .reader-actions {
+    gap: 8px;
+  }
+
+  html[data-runtime='desktop'] .desktop-toolbar-button {
+    min-height: 36px;
+    padding: 0 12px;
+    border: 1px solid transparent;
+    border-radius: 8px;
+    color: var(--text-muted);
+    background: transparent;
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
+    font-size: 13px;
+    font-weight: 650;
+  }
+
+  html[data-runtime='desktop'] .desktop-toolbar-button:hover,
+  html[data-runtime='desktop'] .desktop-toolbar-button.active {
+    border-color: var(--border);
+    color: var(--accent);
+    background: var(--accent-soft);
+  }
+
+  html[data-runtime='desktop'] .search-panel {
+    right: 24px;
+    left: auto;
+    top: 70px;
+    width: min(440px, calc(100vw - 140px));
+    transform: none;
+  }
+
+  html[data-runtime='desktop'] .desktop-toc {
+    position: fixed;
+    top: 64px;
+    bottom: 0;
+    left: 92px;
+    z-index: 4;
+    width: 292px;
+    border-right: 1px solid var(--border);
+    background: var(--surface);
+    display: flex;
+    flex-direction: column;
+  }
+
+  html[data-runtime='desktop'] .desktop-toc-collapsed .desktop-toc {
+    display: none;
+  }
+
+  html[data-runtime='desktop'] .desktop-toc-header {
+    min-height: 64px;
+    padding: 10px 12px 10px 18px;
+    border-bottom: 1px solid var(--border);
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+  }
+
+  html[data-runtime='desktop'] .desktop-toc-header > div {
+    min-width: 0;
+    display: grid;
+    gap: 3px;
+  }
+
+  html[data-runtime='desktop'] .desktop-toc-header span {
+    color: var(--text-strong);
+    font-size: 15px;
+    font-weight: 700;
+  }
+
+  html[data-runtime='desktop'] .desktop-toc-header small {
+    color: var(--text-muted);
+    font-size: 11px;
+  }
+
+  html[data-runtime='desktop'] .desktop-toc-content {
+    min-height: 0;
+    padding: 14px 12px 24px;
+    overflow-y: auto;
+  }
+
+  html[data-runtime='desktop'] .desktop-toc .toc-tools {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+  }
+
+  html[data-runtime='desktop'] .desktop-toc .toc-list {
+    border: 0;
+    border-radius: 0;
+  }
+
+  html[data-runtime='desktop'] .desktop-toc .toc-item {
+    min-height: 38px;
+    border: 0;
+    border-radius: 7px;
+    font-size: 13px;
+  }
+
+  html[data-runtime='desktop'] .reader-document-pane {
+    min-width: 0;
+    margin-left: 292px;
+    transition: margin-left 160ms ease;
+  }
+
+  html[data-runtime='desktop'] .desktop-toc-collapsed .reader-document-pane {
+    margin-left: 0;
+  }
+
+  html[data-runtime='desktop'] .reader-status,
+  html[data-runtime='desktop'] .external-resource-banner,
+  html[data-runtime='desktop'] .render-fallback-notice {
+    margin-right: 32px;
+    margin-left: 32px;
+  }
+
+  html[data-runtime='desktop'] .reader-content {
+    padding: 30px 48px 64px;
+  }
+
+  html[data-runtime='desktop'] .width-level-0 .reader-content {
+    max-width: 900px;
+  }
+
+  html[data-runtime='desktop'] .width-level-1 .reader-content {
+    max-width: 1200px;
+  }
+
+  html[data-runtime='desktop'] .source-view,
+  html[data-runtime='desktop'] .html-frame {
+    width: calc(100% - 64px);
+    margin-right: 32px;
+    margin-left: 32px;
   }
 
   html[data-runtime='desktop'] .reader-toolbar {
-    right: 18px;
+    right: 24px;
+    bottom: 22px;
   }
 
   html[data-runtime='desktop'] .bottom-nav {
-    right: 50%;
-    left: 50%;
-    width: min(100%, 960px);
+    top: 0;
+    right: auto;
+    bottom: 0;
+    left: 0;
+    width: 92px;
+    height: 100svh;
     max-width: none;
     margin: 0;
-    transform: translateX(-50%);
-    border-inline: 1px solid var(--border);
-    border-radius: 12px 12px 0 0;
+    padding: 14px 9px;
+    border-top: 0;
+    border-right: 1px solid var(--border);
+    grid-template-columns: 1fr;
+    grid-template-rows: 64px repeat(3, 72px) 1fr;
+    align-content: start;
+    gap: 6px;
+  }
+
+  html[data-runtime='desktop'] .desktop-nav-brand {
+    color: var(--accent);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 7px;
+    font-size: 14px;
+    font-weight: 750;
+  }
+
+  html[data-runtime='desktop'] .bottom-nav button {
+    width: 100%;
+    min-height: 64px;
+    border-radius: 10px;
+    gap: 6px;
+  }
+
+  html[data-runtime='desktop'] .bottom-nav button:hover:not(:disabled),
+  html[data-runtime='desktop'] .bottom-nav button.active {
+    color: var(--accent);
+    background: var(--accent-soft);
+  }
+
+  html[data-runtime='desktop'] .desktop-popover-layer {
+    position: fixed;
+    inset: 0;
+    z-index: 12;
+    display: block;
+  }
+
+  html[data-runtime='desktop'] .desktop-popover {
+    position: absolute;
+    width: 300px;
+    max-height: calc(100svh - 24px);
+    padding: 12px;
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    background: var(--surface);
+    box-shadow: 0 18px 54px rgba(14, 24, 19, 0.2);
+    overflow-y: auto;
+  }
+
+  html[data-runtime='desktop'] .desktop-popover-header {
+    min-height: 36px;
+    margin: 0 0 8px 4px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+  }
+
+  html[data-runtime='desktop'] .desktop-popover-header h2 {
+    margin: 0;
+    color: var(--text-strong);
+    font-size: 15px;
+  }
+
+  html[data-runtime='desktop'] .desktop-popover .menu-list {
+    border-radius: 8px;
+  }
+
+  html[data-runtime='desktop'] .desktop-popover .menu-action {
+    min-height: 40px;
+    font-size: 13px;
+  }
+
+  html[data-runtime='desktop'] .sheet-backdrop {
+    align-items: center;
+    justify-content: center;
+    padding: 24px;
+  }
+
+  html[data-runtime='desktop'] .sheet {
+    width: min(520px, 100%);
+    max-height: calc(100svh - 48px);
+    padding: 18px;
+    border-radius: 12px;
+    box-shadow: 0 18px 54px rgba(14, 24, 19, 0.2);
+  }
+
+  html[data-runtime='desktop'] .toast {
+    right: auto;
+    bottom: 22px;
+    left: 116px;
+    width: min(420px, calc(100vw - 140px));
   }
 
   html[data-runtime='desktop'] button,

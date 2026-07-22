@@ -1054,10 +1054,12 @@ function ReaderPage({
   const [searchIndex, setSearchIndex] = useState(0)
   const [searchCount, setSearchCount] = useState(0)
   const [tocOpen, setTocOpen] = useState(false)
+  const [desktopTocOpen, setDesktopTocOpen] = useState(true)
   const [tocQuery, setTocQuery] = useState('')
   const [tocExpanded, setTocExpanded] = useState(true)
   const [activeHeadingId, setActiveHeadingId] = useState(document.lastReadHeadingId ?? '')
   const [menuOpen, setMenuOpen] = useState(false)
+  const [menuPosition, setMenuPosition] = useState({ x: 0, y: 0 })
   const [readerToolsOpen, setReaderToolsOpen] = useState(false)
   const [encodingOpen, setEncodingOpen] = useState(false)
   const [htmlPermissionsOpen, setHtmlPermissionsOpen] = useState(false)
@@ -1087,6 +1089,16 @@ function ReaderPage({
   const handleOpenExternalLink = useCallback((url: string) => {
     void desktopPlatform.openExternalLink(url)
   }, [])
+
+  const openDesktopFileMenu = (event: React.MouseEvent<HTMLButtonElement>) => {
+    const menuWidth = 300
+    const menuMaxHeight = Math.min(520, window.innerHeight - 24)
+    setMenuPosition({
+      x: clamp(event.clientX - menuWidth + 24, 12, window.innerWidth - menuWidth - 12),
+      y: clamp(event.clientY + 10, 12, window.innerHeight - menuMaxHeight - 12),
+    })
+    setMenuOpen(true)
+  }
 
   const allowScripts = document.fileType === 'html' && Boolean(document.allowHtmlScripts ?? document.trustedHtml)
   const allowForms = document.fileType === 'html' && Boolean(document.allowHtmlForms)
@@ -1137,6 +1149,9 @@ function ReaderPage({
     setSearchOpen(false)
     setSearchIndex(0)
     setTocQuery('')
+    setTocOpen(false)
+    setDesktopTocOpen(true)
+    setMenuOpen(false)
     setActiveHeadingId(document.lastReadHeadingId ?? '')
     setReaderMode(document.fileSize >= FILE_SIZE_DANGER ? 'source' : 'rendered')
     setRenderFailed(false)
@@ -1716,9 +1731,104 @@ function ReaderPage({
     setHtmlFrameVersion((version) => version + 1)
   }
 
+  const jumpToHeading = (heading: HeadingItem, closeMobileDirectory: boolean) => {
+    try {
+      if (document.fileType === 'html') {
+        iframeRef.current?.contentDocument?.getElementById(heading.id)?.scrollIntoView({ block: 'start' })
+      } else {
+        window.document.getElementById(heading.id)?.scrollIntoView({ block: 'start' })
+      }
+    } catch {
+      onShowToast('脚本隔离模式下无法定位目录，请暂时关闭脚本权限', 'warning')
+    }
+    setActiveHeadingId(heading.id)
+    onUpdate({ lastReadHeadingId: heading.id })
+    if (closeMobileDirectory) setTocOpen(false)
+  }
+
+  const renderTableOfContents = (closeMobileDirectory: boolean) => (
+    <>
+      {headings.length > 0 && (
+        <div className="toc-tools">
+          <input
+            value={tocQuery}
+            placeholder="搜索目录"
+            aria-label="搜索目录"
+            onChange={(event) => setTocQuery(event.target.value)}
+          />
+          <button type="button" onClick={() => setTocExpanded((expanded) => !expanded)}>
+            {tocExpanded ? '折叠' : '展开'}
+          </button>
+        </div>
+      )}
+      {headings.length === 0 ? (
+        <p className="sheet-empty">当前文档没有标题。</p>
+      ) : (
+        <div className="toc-list">
+          {visibleHeadings.map((heading) => (
+            <button
+              key={heading.id}
+              className={`toc-item level-${heading.level}${activeHeadingId === heading.id ? ' active' : ''}`}
+              type="button"
+              onClick={() => jumpToHeading(heading, closeMobileDirectory)}
+            >
+              {heading.text}
+            </button>
+          ))}
+        </div>
+      )}
+    </>
+  )
+
+  const renderFileMenuActions = () => (
+    <div className="menu-list">
+      <MenuAction icon={<Archive size={18} />} label="保存到文件库" onClick={() => { setMenuOpen(false); saveToLibrary() }} />
+      <MenuAction
+        icon={<Heart size={18} />}
+        label={document.isFavorite ? '取消收藏' : '收藏'}
+        onClick={() => { setMenuOpen(false); toggleFavorite() }}
+      />
+      <MenuAction
+        icon={<FileCode2 size={18} />}
+        label={readerMode === 'source' ? '查看阅读视图' : '查看源码'}
+        onClick={() => {
+          setMenuOpen(false)
+          setReaderMode(readerMode === 'source' ? 'rendered' : 'source')
+        }}
+      />
+      <MenuAction icon={<Copy size={18} />} label="复制全文" onClick={() => { setMenuOpen(false); void copyText() }} />
+      {document.fileType === 'html' && (
+        <MenuAction
+          icon={<ShieldCheck size={18} />}
+          label="HTML 权限"
+          onClick={() => {
+            setMenuOpen(false)
+            setHtmlPermissionsOpen(true)
+          }}
+        />
+      )}
+      <MenuAction
+        icon={<Type size={18} />}
+        label="编码设置"
+        onClick={() => { setMenuOpen(false); setEncodingOpen(true) }}
+      />
+      <MenuAction icon={<Upload size={18} />} label={exporting ? '导出中...' : '导出 PDF'} onClick={() => { void exportPdf() }} />
+      <MenuAction
+        icon={<ImageDown size={18} />}
+        label={exporting ? '生成中...' : '分享图片'}
+        onClick={() => { setMenuOpen(false); setImageExportOpen(true) }}
+      />
+      <MenuAction
+        icon={<Share2 size={18} />}
+        label={exporting ? (isDesktop ? '导出中...' : '分享中...') : (isDesktop ? '导出原文件' : '分享原文件')}
+        onClick={() => { void shareOriginalFile() }}
+      />
+    </div>
+  )
+
   return (
     <section
-      className={`page page-reader font-level-${settings.fontSizeLevel} line-level-${settings.lineHeightLevel} width-level-${settings.contentWidthLevel} code-level-${settings.codeSizeLevel}`}
+      className={`page page-reader${desktopTocOpen ? '' : ' desktop-toc-collapsed'} font-level-${settings.fontSizeLevel} line-level-${settings.lineHeightLevel} width-level-${settings.contentWidthLevel} code-level-${settings.codeSizeLevel}`}
       aria-label="文件阅读页"
       ref={scrollRef}
       onScroll={scheduleReadPositionSave}
@@ -1738,14 +1848,41 @@ function ReaderPage({
           <p>来自{document.sourceType} · {document.fileExtension.toUpperCase()}</p>
         </div>
         <div className="reader-actions" aria-label="阅读操作">
-          <button className="icon-button" type="button" onClick={() => setSearchOpen(true)} aria-label="搜索">
+          <button className="icon-button mobile-only" type="button" onClick={() => setSearchOpen(true)} aria-label="搜索">
             <Search size={19} />
           </button>
-          <button className="icon-button" type="button" onClick={() => setTocOpen(true)} aria-label="目录">
+          <button className="icon-button mobile-only" type="button" onClick={() => setTocOpen(true)} aria-label="目录">
             <ListTree size={19} />
           </button>
-          <button className="icon-button" type="button" onClick={() => setMenuOpen(true)} aria-label="更多">
+          <button className="icon-button mobile-only" type="button" onClick={() => setMenuOpen(true)} aria-label="更多">
             <Menu size={19} />
+          </button>
+          <button
+            className={`desktop-toolbar-button desktop-only${searchOpen ? ' active' : ''}`}
+            type="button"
+            onClick={() => setSearchOpen((open) => !open)}
+            aria-expanded={searchOpen}
+          >
+            <Search size={17} />
+            <span>查找</span>
+          </button>
+          <button
+            className={`desktop-toolbar-button desktop-only${desktopTocOpen ? ' active' : ''}`}
+            type="button"
+            onClick={() => setDesktopTocOpen((open) => !open)}
+            aria-expanded={desktopTocOpen}
+          >
+            <ListTree size={17} />
+            <span>章节</span>
+          </button>
+          <button
+            className={`desktop-toolbar-button desktop-only${menuOpen ? ' active' : ''}`}
+            type="button"
+            onClick={openDesktopFileMenu}
+            aria-expanded={menuOpen}
+          >
+            <Menu size={17} />
+            <span>文件操作</span>
           </button>
         </div>
       </header>
@@ -1797,6 +1934,23 @@ function ReaderPage({
           </button>
         </div>
       )}
+
+      <aside className="desktop-toc desktop-only" aria-label="章节目录">
+        <header className="desktop-toc-header">
+          <div>
+            <span>章节</span>
+            <small>{headings.length} 个标题</small>
+          </div>
+          <button className="icon-button" type="button" onClick={() => setDesktopTocOpen(false)} aria-label="收起章节">
+            <X size={17} />
+          </button>
+        </header>
+        <div className="desktop-toc-content">
+          {renderTableOfContents(false)}
+        </div>
+      </aside>
+
+      <div className="reader-document-pane">
 
       <div className="reader-status">
         <span>{statusText}</span>
@@ -1894,6 +2048,8 @@ function ReaderPage({
         <TextReader content={document.content} />
       )}
 
+      </div>
+
       <div className={`reader-toolbar${readerToolsOpen ? ' open' : ''}`} aria-label="阅读工具">
         <div className="reader-tool-menu" aria-hidden={!readerToolsOpen}>
           <button type="button" onClick={toggleTheme} tabIndex={readerToolsOpen ? 0 : -1}>
@@ -1925,95 +2081,24 @@ function ReaderPage({
       </div>
 
       {tocOpen && (
-        <Sheet title="目录" onClose={() => setTocOpen(false)}>
-          {headings.length > 0 && (
-            <div className="toc-tools">
-              <input
-                value={tocQuery}
-                placeholder="搜索目录"
-                aria-label="搜索目录"
-                onChange={(event) => setTocQuery(event.target.value)}
-              />
-              <button type="button" onClick={() => setTocExpanded((expanded) => !expanded)}>
-                {tocExpanded ? '折叠' : '展开'}
-              </button>
-            </div>
-          )}
-          {headings.length === 0 ? (
-            <p className="sheet-empty">当前文档没有标题。</p>
-          ) : (
-            <div className="toc-list">
-              {visibleHeadings.map((heading) => (
-                <button
-                  key={heading.id}
-                  className={`toc-item level-${heading.level}${activeHeadingId === heading.id ? ' active' : ''}`}
-                  type="button"
-                  onClick={() => {
-                    try {
-                      if (document.fileType === 'html') {
-                        iframeRef.current?.contentDocument?.getElementById(heading.id)?.scrollIntoView({ block: 'start' })
-                      } else {
-                        window.document.getElementById(heading.id)?.scrollIntoView({ block: 'start' })
-                      }
-                    } catch {
-                      onShowToast('脚本隔离模式下无法定位目录，请暂时关闭脚本权限', 'warning')
-                    }
-                    setActiveHeadingId(heading.id)
-                    onUpdate({ lastReadHeadingId: heading.id })
-                    setTocOpen(false)
-                  }}
-                >
-                  {heading.text}
-                </button>
-              ))}
-            </div>
-          )}
-        </Sheet>
+        <div className="mobile-only mobile-directory-sheet">
+          <Sheet title="目录" onClose={() => setTocOpen(false)}>
+            {renderTableOfContents(true)}
+          </Sheet>
+        </div>
       )}
 
       {menuOpen && (
-        <Sheet title="文件操作" onClose={() => setMenuOpen(false)}>
-          <div className="menu-list">
-            <MenuAction icon={<Archive size={18} />} label="保存到文件库" onClick={saveToLibrary} />
-            <MenuAction
-              icon={<Heart size={18} />}
-              label={document.isFavorite ? '取消收藏' : '收藏'}
-              onClick={toggleFavorite}
-            />
-            <MenuAction
-              icon={<FileCode2 size={18} />}
-              label={readerMode === 'source' ? '查看阅读视图' : '查看源码'}
-              onClick={() => setReaderMode(readerMode === 'source' ? 'rendered' : 'source')}
-            />
-            <MenuAction icon={<Copy size={18} />} label="复制全文" onClick={copyText} />
-            {document.fileType === 'html' && (
-              <MenuAction
-                icon={<ShieldCheck size={18} />}
-                label="HTML 权限"
-                onClick={() => {
-                  setMenuOpen(false)
-                  setHtmlPermissionsOpen(true)
-                }}
-              />
-            )}
-            <MenuAction
-              icon={<Type size={18} />}
-              label="编码设置"
-              onClick={() => { setMenuOpen(false); setEncodingOpen(true) }}
-            />
-            <MenuAction icon={<Upload size={18} />} label={exporting ? '导出中...' : '导出 PDF'} onClick={exportPdf} />
-            <MenuAction
-              icon={<ImageDown size={18} />}
-              label={exporting ? '生成中...' : '分享图片'}
-              onClick={() => { setMenuOpen(false); setImageExportOpen(true) }}
-            />
-            <MenuAction
-              icon={<Share2 size={18} />}
-              label={exporting ? (isDesktop ? '导出中...' : '分享中...') : (isDesktop ? '导出原文件' : '分享原文件')}
-              onClick={shareOriginalFile}
-            />
+        <>
+          <div className="mobile-only mobile-file-menu">
+            <Sheet title="文件操作" onClose={() => setMenuOpen(false)}>
+              {renderFileMenuActions()}
+            </Sheet>
           </div>
-        </Sheet>
+          <DesktopPopover title="文件操作" position={menuPosition} onClose={() => setMenuOpen(false)}>
+            {renderFileMenuActions()}
+          </DesktopPopover>
+        </>
       )}
 
       {imageExportOpen && (
@@ -2235,6 +2320,10 @@ type BottomNavProps = {
 function BottomNav({ currentView, hasReader, onNavigate }: BottomNavProps) {
   return (
     <nav className="bottom-nav" aria-label="主导航">
+      <div className="desktop-nav-brand desktop-only" aria-hidden="true">
+        <FileText size={21} />
+        <span>轻页</span>
+      </div>
       <button
         className={currentView === 'home' ? 'active' : ''}
         type="button"
@@ -2261,6 +2350,39 @@ function BottomNav({ currentView, hasReader, onNavigate }: BottomNavProps) {
         <span>设置</span>
       </button>
     </nav>
+  )
+}
+
+function DesktopPopover({
+  title,
+  position,
+  children,
+  onClose,
+}: {
+  title: string
+  position: { x: number; y: number }
+  children: React.ReactNode
+  onClose: () => void
+}) {
+  return (
+    <div className="desktop-popover-layer desktop-only" role="presentation" onMouseDown={onClose}>
+      <section
+        className="desktop-popover"
+        role="dialog"
+        aria-modal="false"
+        aria-label={title}
+        style={{ left: position.x, top: position.y }}
+        onMouseDown={(event) => event.stopPropagation()}
+      >
+        <header className="desktop-popover-header">
+          <h2>{title}</h2>
+          <button className="icon-button" type="button" onClick={onClose} aria-label="关闭">
+            <X size={17} />
+          </button>
+        </header>
+        {children}
+      </section>
+    </div>
   )
 }
 

@@ -40,3 +40,22 @@ test('设置页可切换系统主题和阅读排版', async ({ page }) => {
   await lineHeightButton.click()
   await expect(lineHeightButton).toContainText('宽松')
 })
+
+test('手机端仍使用底部导航和文件操作抽屉', async ({ page }) => {
+  await page.locator('input[type="file"]').setInputFiles({
+    name: '手机布局.md',
+    mimeType: 'text/markdown',
+    buffer: Buffer.from('# 手机阅读\n\n正文。'),
+  })
+  await expect(page.getByRole('heading', { name: '手机阅读' })).toBeVisible()
+  await expect(page.locator('.desktop-toc')).toBeHidden()
+
+  const navigationBox = await page.locator('.bottom-nav').boundingBox()
+  expect(navigationBox).not.toBeNull()
+  expect(navigationBox?.width).toBeGreaterThan(300)
+  expect((navigationBox?.y ?? 0) + (navigationBox?.height ?? 0)).toBeGreaterThan(800)
+
+  await page.getByRole('button', { name: '更多' }).click()
+  await expect(page.locator('.mobile-file-menu .sheet')).toBeVisible()
+  await expect(page.locator('.desktop-popover')).toBeHidden()
+})
