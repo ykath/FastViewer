@@ -42,16 +42,35 @@ export function rewriteRelativeResources(
 
 export function extractMarkdownHeadings(markdown: string): HeadingItem[] {
   const used = new Map<string, number>()
-  return markdown.split(/\r?\n/)
-    .map((line) => /^(#{1,6})\s+(.+?)\s*#*$/.exec(line.trim()))
-    .filter((match): match is RegExpExecArray => Boolean(match))
-    .map((match) => {
-      const text = match[2].trim()
-      const baseId = slugify(text)
-      const count = used.get(baseId) ?? 0
-      used.set(baseId, count + 1)
-      return { id: count ? `${baseId}-${count}` : baseId, level: match[1].length, text }
-    })
+  const headings: HeadingItem[] = []
+  let fence: { marker: '`' | '~'; length: number } | null = null
+
+  for (const line of markdown.split(/\r?\n/)) {
+    if (fence) {
+      const closingFence = /^ {0,3}(`{3,}|~{3,})[ \t]*$/.exec(line)
+      if (closingFence && closingFence[1][0] === fence.marker && closingFence[1].length >= fence.length) fence = null
+      continue
+    }
+
+    const openingFence = /^ {0,3}(`{3,}|~{3,})/.exec(line)
+    if (openingFence) {
+      fence = { marker: openingFence[1][0] as '`' | '~', length: openingFence[1].length }
+      continue
+    }
+
+    // CommonMark only permits up to three leading spaces before an ATX heading.
+    // Four-space indentation is a code block and must not appear in the TOC.
+    const match = /^ {0,3}(#{1,6})[ \t]+(.+?)\s*#*$/.exec(line)
+    if (!match) continue
+
+    const text = match[2].trim()
+    const baseId = slugify(text)
+    const count = used.get(baseId) ?? 0
+    used.set(baseId, count + 1)
+    headings.push({ id: count ? `${baseId}-${count}` : baseId, level: match[1].length, text })
+  }
+
+  return headings
 }
 
 export function buildSafeHtmlDocument(

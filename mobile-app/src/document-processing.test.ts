@@ -64,6 +64,26 @@ describe('目录和归档资源', () => {
     ])
   })
 
+  it('忽略围栏代码块和缩进代码块中的井号注释', () => {
+    const markdown = [
+      '# 正文章节',
+      '```python',
+      '# Python 注释',
+      '## 仍然是注释',
+      '```',
+      '~~~python',
+      '# 波浪号围栏中的注释',
+      '~~~~',
+      '    # 缩进代码中的注释',
+      '## 下一章节',
+    ].join('\n')
+
+    expect(extractMarkdownHeadings(markdown)).toEqual([
+      { id: '正文章节', level: 1, text: '正文章节' },
+      { id: '下一章节', level: 2, text: '下一章节' },
+    ])
+  })
+
   it('只改写归档内已授权的相对资源', () => {
     const resources = { 'docs/images/a.png': 'app://safe/a.png' }
     const rewritten = rewriteRelativeResources(
