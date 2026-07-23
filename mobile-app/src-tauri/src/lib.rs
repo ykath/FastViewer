@@ -1,6 +1,6 @@
 use serde::Serialize;
 use std::{
-    collections::{HashSet, VecDeque},
+    collections::{HashMap, HashSet, VecDeque},
     env,
     fs,
     path::{Path, PathBuf},
@@ -10,6 +10,10 @@ use tauri::{Emitter, Manager};
 use tauri_plugin_fs::FsExt;
 
 const SUPPORTED_EXTENSIONS: &[&str] = &["md", "markdown", "mdown", "html", "htm", "xhtml"];
+const SUPPORTED_IMAGE_EXTENSIONS: &[&str] = &["png", "jpg", "jpeg", "gif", "webp"];
+const MAX_RELATIVE_RESOURCES: usize = 64;
+const MAX_RELATIVE_RESOURCE_BYTES: u64 = 20 * 1024 * 1024;
+const MAX_RELATIVE_RESOURCES_TOTAL_BYTES: u64 = 64 * 1024 * 1024;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -79,6 +83,55 @@ fn allow_request(app: &tauri::AppHandle, path: &Path) -> Result<(), String> {
         .map_err(|error| format!("无法授权文件访问：{error}"))
 }
 
+fn resolve_relative_resource_paths(
+    document_path: impl AsRef<Path>,
+    relative_paths: Vec<String>,
+) -> Result<HashMap<String, PathBuf>, String> {
+    let document = fs::canonicalize(document_path.as_ref())
+        .map_err(|_| "Markdown 文件不存在或无法访问".to_string())?;
+    let document_dir = document
+        .parent()
+        .ok_or_else(|| "无法确定 Markdown 文件所在目录".to_string())?;
+    let mut total_bytes = 0_u64;
+    let mut resolved = HashMap::new();
+
+    for relative_path in relative_paths.into_iter().take(MAX_RELATIVE_RESOURCES) {
+        let candidate = Path::new(&relative_path);
+        if candidate.is_absolute() || relative_path.contains('\0') {
+            continue;
+        }
+        let Ok(canonical) = fs::canonicalize(document_dir.join(candidate)) else {
+            continue;
+        };
+        if !canonical.starts_with(document_dir) {
+            continue;
+        }
+        let extension = canonical
+            .extension()
+            .and_then(|value| value.to_str())
+            .map(str::to_ascii_lowercase);
+        if !extension
+            .as_deref()
+            .is_some_and(|value| SUPPORTED_IMAGE_EXTENSIONS.contains(&value))
+        {
+            continue;
+        }
+        let Ok(metadata) = fs::metadata(&canonical) else {
+            continue;
+        };
+        if !metadata.is_file() || metadata.len() > MAX_RELATIVE_RESOURCE_BYTES {
+            continue;
+        }
+        if total_bytes.saturating_add(metadata.len()) > MAX_RELATIVE_RESOURCES_TOTAL_BYTES {
+            break;
+        }
+        total_bytes += metadata.len();
+        resolved.insert(relative_path, canonical);
+    }
+
+    Ok(resolved)
+}
+
 #[tauri::command]
 fn prepare_open_request(
     app: tauri::AppHandle,
@@ -88,6 +141,21 @@ fn prepare_open_request(
     let (canonical, request) = validate_open_path(path, &source)?;
     allow_request(&app, &canonical)?;
     Ok(request)
+}
+
+#[tauri::command]
+fn resolve_relative_resources(
+    app: tauri::AppHandle,
+    document_path: String,
+    relative_paths: Vec<String>,
+) -> Result<HashMap<String, String>, String> {
+    let resources = resolve_relative_resource_paths(document_path, relative_paths)?;
+    let mut allowed = HashMap::new();
+    for (source, path) in resources {
+        allow_request(&app, &path)?;
+        allowed.insert(source, path.to_string_lossy().into_owned());
+    }
+    Ok(allowed)
 }
 
 #[tauri::command]
@@ -132,7 +200,11 @@ pub fn run() {
             }
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![prepare_open_request, take_pending_open_requests]);
+        .invoke_handler(tauri::generate_handler![
+            prepare_open_request,
+            resolve_relative_resources,
+            take_pending_open_requests
+        ]);
 
     builder
         .run(tauri::generate_context!())
@@ -200,5 +272,43 @@ mod tests {
 
         fs::remove_dir_all(root).unwrap();
     }
-}
 
+    #[test]
+    fn resolves_only_safe_relative_images_below_the_document_directory() {
+        let root = temp_root();
+        let article_dir = root.join("article");
+        let image_dir = article_dir.join("windows");
+        fs::create_dir_all(&image_dir).unwrap();
+        let markdown = article_dir.join("guide.md");
+        let cover = article_dir.join("首页.jpg");
+        let screenshot = image_dir.join("Windows-首页.png");
+        let unsupported = article_dir.join("notes.txt");
+        let outside = root.join("outside.png");
+        fs::write(&markdown, b"# guide").unwrap();
+        fs::write(&cover, b"jpg").unwrap();
+        fs::write(&screenshot, b"png").unwrap();
+        fs::write(&unsupported, b"text").unwrap();
+        fs::write(&outside, b"outside").unwrap();
+
+        let resources = resolve_relative_resource_paths(
+            &markdown,
+            vec![
+                "首页.jpg".to_string(),
+                "windows/Windows-首页.png".to_string(),
+                "notes.txt".to_string(),
+                "../outside.png".to_string(),
+                "missing.png".to_string(),
+            ],
+        )
+        .unwrap();
+
+        assert_eq!(resources.len(), 2);
+        assert_eq!(resources["首页.jpg"], fs::canonicalize(cover).unwrap());
+        assert_eq!(
+            resources["windows/Windows-首页.png"],
+            fs::canonicalize(screenshot).unwrap()
+        );
+
+        fs::remove_dir_all(root).unwrap();
+    }
+}

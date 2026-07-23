@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { createRef } from 'react'
-import { cleanup, render, screen, waitFor } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import MarkdownReader from './MarkdownReader'
 import { extractMarkdownHeadings } from './html-processing'
@@ -67,6 +67,31 @@ describe('MarkdownReader', () => {
 
     expect(container.textContent).toContain('\\definitelyInvalid{x}')
     expect(screen.getByText('后续正文。')).toBeTruthy()
+  })
+
+  it('使用资源映射加载相对图片，并在资源稍后可用时清除失败回退', async () => {
+    const props = {
+      content: '![轻页首页](windows/Windows-首页.png)',
+      documentPath: '使用说明.md',
+      contentRef: createRef<HTMLElement>(),
+      themeMode: 'light' as const,
+    }
+    const { rerender } = render(<MarkdownReader {...props} />)
+    const initialImage = screen.getByRole('img', { name: '轻页首页' })
+    fireEvent.error(initialImage)
+    expect(screen.getByText('轻页首页')).toBeTruthy()
+
+    const dataUrl = 'data:image/png;base64,iVBORw0KGgo='
+    rerender(
+      <MarkdownReader
+        {...props}
+        resources={{ 'windows/windows-首页.png': dataUrl }}
+      />,
+    )
+
+    await waitFor(() => {
+      expect(screen.getByRole('img', { name: '轻页首页' }).getAttribute('src')).toBe(dataUrl)
+    })
   })
 
   it('异步绘制多个 Mermaid 图表并使用唯一 ID 和严格安全配置', async () => {

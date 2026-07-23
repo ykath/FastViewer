@@ -294,6 +294,21 @@ function App() {
     )
     setActiveDocumentId(doc.id)
     setView('reader')
+    if (
+      desktopPlatform.isDesktop()
+      && doc.fileType === 'markdown'
+      && doc.sourceUri
+      && !doc.archiveResources
+    ) {
+      void desktopPlatform.loadMarkdownResources(doc.sourceUri, doc.content)
+        .then((resources) => {
+          if (Object.keys(resources).length === 0) return
+          persistDocuments((items) =>
+            upsertDocument(items, { ...doc, archiveResources: resources, lastOpenedAt: openedAt }),
+          )
+        })
+        .catch(() => undefined)
+    }
   }
 
   const importDocument = (doc: DocumentRecord, openAfterImport = true) => {
@@ -322,10 +337,27 @@ function App() {
     return 'open'
   }
 
-  const processBytes = async (bytes: Uint8Array, fileName: string, sourceType: string, sourceUri?: string, fileSize?: number, startedAt = startPerformanceSpan()) => {
+  const processBytes = async (
+    bytes: Uint8Array,
+    fileName: string,
+    sourceType: string,
+    sourceUri?: string,
+    fileSize?: number,
+    startedAt = startPerformanceSpan(),
+    loadResources?: (content: string) => Promise<Record<string, string>>,
+  ) => {
     const result = await decodeDocumentBytes(bytes)
     // 原始字节写入独立文件存储，不因文件大小退化为 UTF-8 重写。
     const rawBase64 = result.rawBase64
+    let archiveResources: Record<string, string> | undefined
+    if (inferFileType(fileName) === 'markdown' && loadResources) {
+      try {
+        const resources = await loadResources(result.content)
+        if (Object.keys(resources).length > 0) archiveResources = resources
+      } catch {
+        showToast('正文已打开，但同目录图片加载失败', 'warning')
+      }
+    }
 
     const record = createRecordFromBytes({
       fileName,
@@ -335,6 +367,7 @@ function App() {
       sourceType,
       sourceUri,
       fileSize: fileSize ?? bytes.length,
+      archiveResources,
     })
 
     importDocument(record)
@@ -365,7 +398,15 @@ function App() {
     try {
       const bytes = await desktopPlatform.readDocument(request)
       const sourceType = request.source === 'picker' ? 'Windows 文件选择器' : 'Windows 资源管理器'
-      await processBytes(bytes, request.fileName, sourceType, request.path, request.size, startedAt)
+      await processBytes(
+        bytes,
+        request.fileName,
+        sourceType,
+        request.path,
+        request.size,
+        startedAt,
+        (content) => desktopPlatform.loadMarkdownResources(request.path, content),
+      )
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Windows 文件读取失败'
       showError('UNKNOWN', message)

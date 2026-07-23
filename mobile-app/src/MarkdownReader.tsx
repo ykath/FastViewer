@@ -107,7 +107,8 @@ function createMarkdownComponents(
       )
     },
     img({ alt, src }) {
-      return <ImgWithFallback src={resolveResource(src ?? '')} alt={alt ?? ''} />
+      const resolvedSrc = resolveResource(src ?? '')
+      return <ImgWithFallback key={resolvedSrc} src={resolvedSrc} alt={alt ?? ''} />
     },
     li({ children, ...props }) {
       const hasCheckbox = Array.isArray(children) && children.some(

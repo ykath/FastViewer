@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { describe, expect, it, vi } from 'vitest'
-import { createDesktopPlatform } from './desktop-platform'
+import { createDesktopPlatform, extractLocalMarkdownImageSources } from './desktop-platform'
 import type { DesktopOpenRequest, DesktopPlatformDependencies } from './desktop-platform'
 
 function createDependencies(overrides: Partial<DesktopPlatformDependencies> = {}): DesktopPlatformDependencies {
@@ -96,5 +96,50 @@ describe('desktop platform adapter', () => {
     await platform.openExternalLink('https://example.com')
     expect(openUrlMock).toHaveBeenCalledTimes(1)
   })
-})
 
+  it('extracts only local Markdown image paths', () => {
+    expect(extractLocalMarkdownImageSources([
+      '![首页](首页.jpg)',
+      '![桌面](<windows/Windows%20首页.png>)',
+      '![重复](首页.jpg)',
+      '![远程](https://example.com/a.png)',
+      '![数据](data:image/png;base64,AAAA)',
+      '![绝对](/images/a.png)',
+    ].join('\n'))).toEqual([
+      '首页.jpg',
+      'windows/Windows 首页.png',
+    ])
+  })
+
+  it('loads approved relative images as persistent data URLs', async () => {
+    const invokeMock = vi.fn(async (command) => {
+      if (command === 'resolve_relative_resources') {
+        return {
+          '首页.jpg': 'C:\\文章\\首页.jpg',
+          'windows/Windows-首页.png': 'C:\\文章\\windows\\Windows-首页.png',
+        }
+      }
+      return []
+    }) as DesktopPlatformDependencies['invoke']
+    const readFile = vi.fn(async (path: string | URL) =>
+      String(path).endsWith('.png') ? new Uint8Array([137, 80, 78, 71]) : new Uint8Array([255, 216, 255]),
+    )
+    const platform = createDesktopPlatform(createDependencies({
+      invoke: invokeMock,
+      readFile,
+    }))
+
+    const resources = await platform.loadMarkdownResources(
+      'C:\\文章\\使用说明.md',
+      '![首页](首页.jpg)\n![Windows](windows/Windows-首页.png)',
+    )
+
+    expect(invokeMock).toHaveBeenCalledWith('resolve_relative_resources', {
+      documentPath: 'C:\\文章\\使用说明.md',
+      relativePaths: ['首页.jpg', 'windows/Windows-首页.png'],
+    })
+    expect(resources['首页.jpg']).toMatch(/^data:image\/jpeg;base64,/)
+    expect(resources['windows/windows-首页.png']).toMatch(/^data:image\/png;base64,/)
+    expect(readFile).toHaveBeenCalledTimes(2)
+  })
+})

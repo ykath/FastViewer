@@ -18,6 +18,9 @@ export type DesktopImageFile = {
 }
 
 type UnlistenFn = () => void
+type RelativeResourcePaths = Record<string, string>
+
+const MAX_RELATIVE_IMAGES = 64
 
 export type DesktopPlatformDependencies = {
   isTauri: () => boolean
@@ -74,6 +77,21 @@ export function createDesktopPlatform(dependencies: DesktopPlatformDependencies 
 
     readDocument(request: DesktopOpenRequest) {
       return dependencies.readFile(request.path)
+    },
+
+    async loadMarkdownResources(documentPath: string, content: string): Promise<Record<string, string>> {
+      if (!isDesktop()) return {}
+      const sources = extractLocalMarkdownImageSources(content).slice(0, MAX_RELATIVE_IMAGES)
+      if (sources.length === 0) return {}
+      const resolved = await dependencies.invoke<RelativeResourcePaths>('resolve_relative_resources', {
+        documentPath,
+        relativePaths: sources,
+      })
+      const resources = await Promise.all(Object.entries(resolved).map(async ([source, path]) => {
+        const bytes = await dependencies.readFile(path)
+        return [normalizeResourceKey(source), bytesToImageDataUrl(bytes, path)] as const
+      }))
+      return Object.fromEntries(resources)
     },
 
     async takePendingOpenRequests(): Promise<DesktopOpenRequest[]> {
@@ -140,3 +158,54 @@ export function createDesktopPlatform(dependencies: DesktopPlatformDependencies 
 }
 
 export const desktopPlatform = createDesktopPlatform()
+
+export function extractLocalMarkdownImageSources(content: string) {
+  const sources: string[] = []
+  const seen = new Set<string>()
+  const imagePattern = /!\[[^\]]*]\(\s*(?:<([^>\r\n]+)>|([^\s)\r\n]+))(?:\s+["'][^"'\r\n]*["'])?\s*\)/g
+  for (const match of content.matchAll(imagePattern)) {
+    const source = (match[1] ?? match[2] ?? '').trim()
+    const localPath = decodeLocalResourcePath(source)
+    if (!localPath || seen.has(localPath)) continue
+    seen.add(localPath)
+    sources.push(localPath)
+  }
+  return sources
+}
+
+function decodeLocalResourcePath(source: string) {
+  const pathOnly = source.split(/[?#]/, 1)[0]
+  if (!pathOnly || /^(?:[a-z][a-z\d+.-]*:|\/\/|[\\/])/i.test(pathOnly)) return ''
+  try {
+    return decodeURIComponent(pathOnly)
+  } catch {
+    return pathOnly
+  }
+}
+
+function normalizeResourceKey(source: string) {
+  const normalized: string[] = []
+  for (const part of source.replace(/\\/g, '/').split('/')) {
+    if (!part || part === '.') continue
+    if (part === '..') normalized.pop()
+    else normalized.push(part)
+  }
+  return normalized.join('/').toLowerCase()
+}
+
+function bytesToImageDataUrl(bytes: Uint8Array, path: string) {
+  const extension = path.split(/[\\/]/).pop()?.split('.').pop()?.toLowerCase()
+  const mimeType = extension === 'png'
+    ? 'image/png'
+    : extension === 'gif'
+      ? 'image/gif'
+      : extension === 'webp'
+        ? 'image/webp'
+        : 'image/jpeg'
+  let binary = ''
+  const chunkSize = 0x8000
+  for (let offset = 0; offset < bytes.length; offset += chunkSize) {
+    binary += String.fromCharCode(...bytes.subarray(offset, offset + chunkSize))
+  }
+  return `data:${mimeType};base64,${btoa(binary)}`
+}
