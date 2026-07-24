@@ -8,9 +8,9 @@
 
 请前往 [GitHub Releases](https://github.com/ykath/FastViewer/releases/latest) 下载最新版本：
 
-- Android：`LightPage_1.1.0_android-debug.apk`
-- Windows 免安装版：`LightPage_1.1.0_windows-x64.exe`
-- Windows 安装包：`LightPage_1.1.0_windows-x64-setup.exe`
+- Android：`LightPage_1.1.1_android-debug.apk`
+- Windows 免安装版：`LightPage_1.1.1_windows-x64.exe`
+- Windows 安装包：`LightPage_1.1.1_windows-x64-setup.exe`
 
 > 当前 Android APK 使用调试证书签名，Windows 文件尚未进行代码签名。安装时系统可能显示安全提示，请只从本仓库的 Releases 页面下载。
 
