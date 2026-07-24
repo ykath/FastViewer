@@ -170,9 +170,14 @@ fn take_pending_open_requests(
 pub fn run() {
     let builder = tauri::Builder::default()
         .plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {
+            let mut queued = false;
             for (path, request) in requests_from_args(args.into_iter().skip(1), "association") {
                 if allow_request(app, &path).is_ok() {
-                    let _ = app.emit("desktop-file-open", request);
+                    let state = app.state::<PendingOpenRequests>();
+                    if let Ok(mut queue) = state.0.lock() {
+                        queue.push_back(request);
+                        queued = true;
+                    };
                 }
             }
 
@@ -180,6 +185,12 @@ pub fn run() {
                 let _ = window.unminimize();
                 let _ = window.show();
                 let _ = window.set_focus();
+            }
+
+            // The queue is the source of truth. The event only wakes the frontend, so
+            // a temporarily unavailable WebView cannot lose an association request.
+            if queued {
+                let _ = app.emit("desktop-open-requested", ());
             }
         }))
         .plugin(tauri_plugin_fs::init())

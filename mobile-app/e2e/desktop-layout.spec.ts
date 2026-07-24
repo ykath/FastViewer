@@ -50,3 +50,35 @@ test('桌面端使用侧边导航、常驻章节栏和点击定位的文件菜�
   expect(popoverBox?.y).toBeLessThan(100)
   await expect(page.locator('.mobile-file-menu .sheet')).toBeHidden()
 })
+
+test('desktop reader keeps the Markdown header translucent and short HTML fills the viewport', async ({ page }) => {
+  await page.goto('/')
+  await page.locator('input[type="file"]').setInputFiles({
+    name: 'translucent.md',
+    mimeType: 'text/markdown',
+    buffer: Buffer.from('# Header check\n\nBody'),
+  })
+  await page.evaluate(() => {
+    document.documentElement.dataset.runtime = 'desktop'
+  })
+
+  const headerStyle = await page.locator('.reader-header').evaluate((element) => {
+    const style = getComputedStyle(element)
+    return { backgroundColor: style.backgroundColor, backdropFilter: style.backdropFilter }
+  })
+  expect(headerStyle.backdropFilter).toContain('blur')
+  expect(headerStyle.backgroundColor).toMatch(/(?:rgba\([^)]*,\s*0\.\d+\)|\/\s*0\.\d+)/)
+
+  await page.locator('input[type="file"]').setInputFiles({
+    name: 'short.html',
+    mimeType: 'text/html',
+    buffer: Buffer.from('<!doctype html><html><body><h1>Short HTML</h1><p>Only one line.</p></body></html>'),
+  })
+  await expect(page.frameLocator('.html-frame').getByRole('heading', { name: 'Short HTML' })).toBeVisible()
+  await page.evaluate(() => window.dispatchEvent(new Event('resize')))
+
+  await expect.poll(async () => {
+    const frame = await page.locator('.html-frame').boundingBox()
+    return frame ? Math.round(frame.y + frame.height) : 0
+  }).toBeGreaterThanOrEqual(899)
+})

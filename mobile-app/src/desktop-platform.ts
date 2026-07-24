@@ -102,8 +102,13 @@ export function createDesktopPlatform(dependencies: DesktopPlatformDependencies 
     async listenForOpenRequests(handler: (request: DesktopOpenRequest) => Promise<void> | void): Promise<UnlistenFn> {
       if (!isDesktop()) return () => undefined
       let chain = Promise.resolve()
-      return dependencies.listen<DesktopOpenRequest>('desktop-file-open', (request) => {
-        chain = chain.then(() => handler(request)).catch(() => undefined)
+      return dependencies.listen<void>('desktop-open-requested', () => {
+        chain = chain.then(async () => {
+          const requests = await dependencies.invoke<DesktopOpenRequest[]>('take_pending_open_requests')
+          for (const request of requests) {
+            await handler(request)
+          }
+        }).catch(() => undefined)
       })
     },
 

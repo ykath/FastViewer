@@ -372,6 +372,7 @@
   border-bottom: 1px solid var(--border);
   background: color-mix(in srgb, var(--reader-surface) 92%, transparent);
   backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
   position: fixed;
   left: 50%;
   top: 0;
@@ -916,7 +917,7 @@ mark.search-hit {
 }
 
 .html-reader {
-  padding: 8px 0 96px;
+  padding: 8px 0 0;
 }
 
 .html-frame {
@@ -1726,6 +1727,13 @@ mark.search-hit.active {
     transform: none;
   }
 
+  html[data-runtime='desktop'] .document-markdown .reader-header {
+    border-bottom-color: color-mix(in srgb, var(--border) 70%, transparent);
+    background: color-mix(in srgb, var(--reader-surface) 68%, transparent);
+    backdrop-filter: blur(18px) saturate(135%);
+    -webkit-backdrop-filter: blur(18px) saturate(135%);
+  }
+
   html[data-runtime='desktop'] .reader-title h1 {
     font-size: 16px;
   }
@@ -1864,6 +1872,12 @@ mark.search-hit.active {
     width: calc(100% - 64px);
     margin-right: 32px;
     margin-left: 32px;
+  }
+
+  html[data-runtime='desktop'] .html-frame.isolated {
+    height: calc(100svh - 152px);
+    min-height: calc(100svh - 152px);
+    max-height: none;
   }
 
   html[data-runtime='desktop'] .reader-toolbar {

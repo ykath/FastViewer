@@ -63,9 +63,16 @@ describe('desktop platform adapter', () => {
   })
 
   it('serializes file association events', async () => {
-    let listener: ((request: DesktopOpenRequest) => void) | undefined
+    let listener: (() => void) | undefined
     const calls: string[] = []
+    const pendingBatches: DesktopOpenRequest[][] = [
+      [{ path: 'a.md', fileName: 'a.md', size: 1, source: 'association' }],
+      [{ path: 'b.md', fileName: 'b.md', size: 1, source: 'association' }],
+    ]
     const platform = createDesktopPlatform(createDependencies({
+      invoke: vi.fn(async (command) =>
+        command === 'take_pending_open_requests' ? pendingBatches.shift() ?? [] : null,
+      ) as DesktopPlatformDependencies['invoke'],
       listen: vi.fn(async (_event, handler) => {
         listener = handler
         return () => undefined
@@ -76,8 +83,8 @@ describe('desktop platform adapter', () => {
       await Promise.resolve()
       calls.push(request.fileName)
     })
-    listener?.({ path: 'a.md', fileName: 'a.md', size: 1, source: 'association' })
-    listener?.({ path: 'b.md', fileName: 'b.md', size: 1, source: 'association' })
+    listener?.()
+    listener?.()
     await new Promise((resolve) => setTimeout(resolve, 0))
     expect(calls).toEqual(['a.md', 'b.md'])
   })

@@ -1731,8 +1731,13 @@ function ReaderPage({
     let resizeFrameId: number | null = null
     const resizeFrameNow = () => {
       resizeFrameId = null
-      const { height } = measureFrameDocument(frameDocument, iframe)
-      iframe.style.height = `${height}px`
+      const frameTop = Math.max(0, iframe.getBoundingClientRect().top)
+      const availableHeight = Math.max(0, window.document.documentElement.clientHeight - frameTop)
+      const { height: contentHeight } = measureFrameDocument(frameDocument, iframe)
+      const nextHeight = Math.max(contentHeight, availableHeight)
+      if (Math.abs(iframe.getBoundingClientRect().height - nextHeight) > 1) {
+        iframe.style.height = `${nextHeight}px`
+      }
     }
     const scheduleResizeFrame = () => {
       if (resizeFrameId !== null) return
@@ -1743,16 +1748,28 @@ function ReaderPage({
     window.setTimeout(scheduleResizeFrame, 120)
     window.setTimeout(scheduleResizeFrame, 600)
 
-    const resizeObserver = new ResizeObserver(scheduleResizeFrame)
-    resizeObserver.observe(frameDocument.documentElement)
-    resizeObserver.observe(frameDocument.body)
+    const mutationObserver = new MutationObserver(scheduleResizeFrame)
+    mutationObserver.observe(frameDocument.documentElement, {
+      attributes: true,
+      childList: true,
+      characterData: true,
+      subtree: true,
+    })
+    frameDocument.addEventListener('load', scheduleResizeFrame, true)
+    const handleViewportResize = () => {
+      iframe.style.height = ''
+      scheduleResizeFrame()
+    }
+    window.addEventListener('resize', handleViewportResize)
 
-    const disconnectResizeObserver = () => {
-      resizeObserver.disconnect()
+    const disconnectFrameObservers = () => {
+      mutationObserver.disconnect()
+      frameDocument.removeEventListener('load', scheduleResizeFrame, true)
+      window.removeEventListener('resize', handleViewportResize)
       if (resizeFrameId !== null) window.cancelAnimationFrame(resizeFrameId)
     }
-    htmlResizeCleanupRef.current = disconnectResizeObserver
-    iframe.addEventListener('load', disconnectResizeObserver, { once: true })
+    htmlResizeCleanupRef.current = disconnectFrameObservers
+    iframe.addEventListener('load', disconnectFrameObservers, { once: true })
 
     if (!allowScripts) {
       frameDocument.querySelectorAll('a[href]').forEach((anchor) => {
@@ -1869,7 +1886,7 @@ function ReaderPage({
 
   return (
     <section
-      className={`page page-reader${desktopTocOpen ? '' : ' desktop-toc-collapsed'} font-level-${settings.fontSizeLevel} line-level-${settings.lineHeightLevel} width-level-${settings.contentWidthLevel} code-level-${settings.codeSizeLevel}`}
+      className={`page page-reader document-${document.fileType}${desktopTocOpen ? '' : ' desktop-toc-collapsed'} font-level-${settings.fontSizeLevel} line-level-${settings.lineHeightLevel} width-level-${settings.contentWidthLevel} code-level-${settings.codeSizeLevel}`}
       aria-label="文件阅读页"
       ref={scrollRef}
       onScroll={scheduleReadPositionSave}
