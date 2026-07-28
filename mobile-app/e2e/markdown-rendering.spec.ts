@@ -35,6 +35,40 @@ flowchart TD
   await expect(page.locator('.mermaid-diagram mark.search-hit')).toHaveCount(0)
 })
 
+test('横向 Mermaid 流程图会缩放到正文宽度且不产生水平滚动条', async ({ page }) => {
+  await page.goto('/')
+  await page.locator('input[type="file"]').setInputFiles({
+    name: '宽流程图.md',
+    mimeType: 'text/markdown',
+    buffer: Buffer.from(`\`\`\`mermaid
+flowchart LR
+  A["Windows WebView2"] --> B["React 19 UI<br/>App.tsx + App.css"]
+  B --> C["前端后端适配层<br/>services/backend.ts"]
+  C -->|"invoke / Channel"| D["Tauri IPC 命令层<br/>commands.rs"]
+  D --> E["领域与编排<br/>models.rs / storage.rs / mineru.rs"]
+  E --> F["工作区文件<br/>JSON / JSONL / Markdown / PDF / TXT"]
+  E --> G["Windows 凭据管理器<br/>API Key / Token"]
+\`\`\``),
+  })
+
+  const diagram = page.locator('.mermaid-diagram')
+  const svg = diagram.locator('svg')
+  await expect(svg).toBeVisible({ timeout: 30_000 })
+
+  const dimensions = await diagram.evaluate((element) => {
+    const renderedSvg = element.querySelector('svg')
+    if (!renderedSvg) throw new Error('Mermaid 图表尚未准备完成')
+    return {
+      diagramClientWidth: element.clientWidth,
+      diagramScrollWidth: element.scrollWidth,
+      svgWidth: renderedSvg.getBoundingClientRect().width,
+    }
+  })
+
+  expect(dimensions.diagramScrollWidth).toBeLessThanOrEqual(dimensions.diagramClientWidth + 1)
+  expect(dimensions.svgWidth).toBeLessThanOrEqual(dimensions.diagramClientWidth + 1)
+})
+
 test('滚动长文档时 Mermaid 图表不会重复绘制或改变页面高度', async ({ page }) => {
   await page.goto('/')
   const fixturePath = process.env.MARKDOWN_FLICKER_FIXTURE

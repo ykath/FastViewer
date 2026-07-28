@@ -82,7 +82,7 @@ function createMermaidConfig(themeMode: ThemeMode): MermaidConfig {
     theme: themeMode === 'dark' ? 'dark' : 'neutral',
     flowchart: {
       htmlLabels: false,
-      useMaxWidth: false,
+      useMaxWidth: true,
     },
   }
 }

@@ -110,6 +110,9 @@ describe('MarkdownReader', () => {
       securityLevel: 'strict',
       startOnLoad: false,
       theme: 'neutral',
+      flowchart: expect.objectContaining({
+        useMaxWidth: true,
+      }),
     }))
   })
 

@@ -1,14 +1,15 @@
+---
+title: 轻页 Android / Windows 完整使用指南
+comments: true
+fans_only_comments: false
+keep_first_h1: false
+---
+
 # 手机和电脑都能舒服看 Markdown：轻页 Android / Windows 完整使用指南
 
-你有没有遇到过这种情况。
+AI 普及之后，工作和生活里分享的 Markdown、HTML 越来越多，微信却都打不开，每次都要「用其他应用打开」，很折腾
 
-朋友从微信里发来一个 `.md` 文件，手机点开是一片源码；AI 导出了一份 HTML 报告，换到电脑上还得先想该用什么软件；临时只想看两眼内容，却被编辑器、工作区和各种配置挡在门外。
-
-轻页，也就是 LightPage，就是为这个小麻烦做的。
-
-它不是笔记软件，也不打算取代专业编辑器。它只专注一件事：让 Markdown、HTML 和纯文本文件在 Android 手机与 Windows 电脑上都能快速打开、安静阅读，并且方便搜索、收藏、导出和分享。
-
-更重要的是，文档正文默认只在本机处理，不会为了“看一个文件”先把内容上传到服务器。
+**轻页（LightPage）** 就是为这件事做的：不是笔记软件，也不取代专业编辑器，只专注让 Markdown、HTML 和纯文本在 Android 与 Windows 上快速打开、安静阅读，并支持搜索、收藏、导出和分享。
 
 ![轻页 Android 首页](./首页.jpg)
 
