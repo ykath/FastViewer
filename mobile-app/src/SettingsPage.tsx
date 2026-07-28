@@ -34,7 +34,7 @@ export default function SettingsPage({ settings, resolvedTheme, onSetSettings }:
         <SettingRow icon={<BookOpen size={19} />} title="使用帮助" description="文件打开、安全权限与导出说明" value="查看" onClick={() => setInfoSheet('help')} />
         <SettingRow icon={<ShieldCheck size={19} />} title="隐私说明" description="文档默认仅在本机处理，不自动上传" value="查看" onClick={() => setInfoSheet('privacy')} />
         <SettingRow icon={<FileCode2 size={19} />} title="性能诊断" description="仅保存在本机的最近耗时记录" value={`${performanceMetrics.length} 条`} onClick={() => setInfoSheet('performance')} />
-        <SettingRow icon={<FileCode2 size={19} />} title="版本" description="稳定性与体验优化版本" value="1.1.1" />
+        <SettingRow icon={<FileCode2 size={19} />} title="版本" description="稳定性与体验优化版本" value="1.1.2" />
       </section>
       {infoSheet === 'help' && <InfoSheet title="使用帮助" onClose={() => setInfoSheet(null)}><p>可从首页、文件管理器或其他 App 打开 Markdown、HTML、ZIP 与 RAR；10 MB 以上文件默认进入源码模式。</p><p>HTML 默认禁用脚本、表单、弹窗和远程资源。同目录图片与 CSS 可在当前文件的“HTML 权限”中授权。</p><p>文件菜单支持真实 PDF、原始文件，以及当前区域、全文或分页图片导出。</p></InfoSheet>}
       {infoSheet === 'privacy' && <InfoSheet title="隐私说明" onClose={() => setInfoSheet(null)}><p>文档正文、原始字节、阅读位置与搜索内容默认仅保存在本机，不会自动上传。</p><p>远程 HTML 资源仅在你明确允许时加载；外部链接、系统分享和目录授权均由你主动触发。</p><p>删除记录会清理正文与对应资源缓存；本地性能日志不包含文档正文。</p></InfoSheet>}

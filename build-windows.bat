@@ -60,11 +60,11 @@ if not exist "%MOBILE_APP%\src-tauri\target\release\bundle\nsis\*setup.exe" (
   echo ERROR: NSIS installer was not found
   exit /b 1
 )
-if exist "%OUTPUT_DIR%\LightPage_1.1.1_x64-setup.exe" del /Q "%OUTPUT_DIR%\LightPage_1.1.1_x64-setup.exe"
+if exist "%OUTPUT_DIR%\LightPage_1.1.2_x64-setup.exe" del /Q "%OUTPUT_DIR%\LightPage_1.1.2_x64-setup.exe"
 for %%F in ("%MOBILE_APP%\src-tauri\target\release\bundle\nsis\*setup.exe") do (
-  copy /Y "%%~fF" "%OUTPUT_DIR%\LightPage_1.1.1_x64-setup.exe" >nul
+  copy /Y "%%~fF" "%OUTPUT_DIR%\LightPage_1.1.2_x64-setup.exe" >nul
 )
-if not exist "%OUTPUT_DIR%\LightPage_1.1.1_x64-setup.exe" (
+if not exist "%OUTPUT_DIR%\LightPage_1.1.2_x64-setup.exe" (
   echo ERROR: NSIS installer was not found
   exit /b 1
 )
@@ -72,7 +72,7 @@ if not exist "%OUTPUT_DIR%\LightPage_1.1.1_x64-setup.exe" (
 echo ============================================
 echo   BUILD SUCCESS - UNSIGNED WINDOWS BUILD
 echo   EXE:   %OUTPUT_DIR%\LightPage.exe
-echo   SETUP: %OUTPUT_DIR%\LightPage_1.1.1_x64-setup.exe
+echo   SETUP: %OUTPUT_DIR%\LightPage_1.1.2_x64-setup.exe
 echo ============================================
 echo NOTE: Unsigned builds may trigger Windows SmartScreen.
 

@@ -1,11 +1,11 @@
-# 轻页 v1.1.1 发布检查清单
+# 轻页 v1.1.2 发布检查清单
 
 ## Windows x64 Gate
 
 - `npm run lint`
 - `npm run desktop:test`
 - `npm run desktop:build`
-- 确认 `mobile-app/release/windows/LightPage.exe` 与 `LightPage_1.1.1_x64-setup.exe` 均生成。
+- 确认 `mobile-app/release/windows/LightPage.exe` 与 `LightPage_1.1.2_x64-setup.exe` 均生成。
 - 在 Windows 10/11 验证安装、卸载、冷启动双击 Markdown、运行中再次双击、中文/空格文件名、应用内 HTML、搜索、目录、主题、阅读进度和导出。
 - 首版产物未签名，发布说明必须提示 SmartScreen；不得提交证书、私钥或密码。
 

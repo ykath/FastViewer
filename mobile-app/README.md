@@ -15,7 +15,7 @@ build-windows.bat
 脚本会安装锁定依赖、执行前端与 Rust 测试、构建未签名的 x64 EXE 和 NSIS 安装包，并输出到：
 
 - `mobile-app/release/windows/LightPage.exe`
-- `mobile-app/release/windows/LightPage_1.1.1_x64-setup.exe`
+- `mobile-app/release/windows/LightPage_1.1.2_x64-setup.exe`
 
 未签名安装包可能触发 Windows SmartScreen。独立 EXE 依赖目标机器已有 WebView2；NSIS 安装包会在缺失时下载 WebView2 bootstrapper。后续签名配置应放入未跟踪的 `src-tauri/tauri.signing.conf.json`，不得提交证书或密码。
 
