@@ -17,9 +17,10 @@ import type {
   ReaderState,
   StoredDocumentMetadata,
 } from './domain-models'
+import { desktopDocumentId } from './desktop-identity'
 
 const DATABASE_NAME = 'lightpage-v3'
-const DATABASE_VERSION = 1
+const DATABASE_VERSION = 2
 const STORE_DOCUMENTS = 'documents'
 const STORE_CONTENT = 'contentBlobs'
 const STORE_READER_STATES = 'readerStates'
@@ -28,6 +29,7 @@ const STORE_PACKAGES = 'packages'
 const STORE_PACKAGE_ENTRIES = 'packageEntries'
 const STORE_META = 'meta'
 const MIGRATION_KEY = 'v2-to-v3'
+const V4_MIGRATION_KEY = 'v3-to-v4'
 
 type ContentRow = DocumentPayload & { key: string }
 type MetaRow = { key: string; value: unknown }
@@ -107,7 +109,7 @@ function toStoredMetadata(document: DocumentRecord, contentRef = contentRefFor(d
   void payloadLoaded
   return {
     ...metadata,
-    storageVersion: 3,
+    storageVersion: 4,
     hasRawBase64: Boolean(rawBase64),
     hasArchiveResources: Boolean(archiveResources && Object.keys(archiveResources).length > 0),
     contentRef,
@@ -136,7 +138,7 @@ export class IndexedDbDocumentRepository implements DocumentRepository {
 
   async migrate(): Promise<MigrationResult> {
     const previous = await this.getMeta<MigrationResult>(MIGRATION_KEY)
-    if (previous?.stage === 'complete') return previous
+    if (previous?.stage === 'complete') return this.migrateV4(previous)
 
     if (!previous) {
       await this.setMeta(MIGRATION_KEY, { stage: 'pending', migratedDocuments: 0, migratedPackages: 0, readonlyFallback: false } satisfies MigrationResult)
@@ -228,8 +230,8 @@ export class IndexedDbDocumentRepository implements DocumentRepository {
         throw new Error('迁移校验失败：文档数量或内容引用不一致')
       }
       for (const item of listed) {
-        if (item.contentRef.kind === 'indexeddb-blob' || item.contentRef.kind === 'desktop-file') {
-          const key = item.contentRef.kind === 'indexeddb-blob' ? item.contentRef.key : item.id
+        if (item.contentRef.kind === 'indexeddb-blob') {
+          const key = item.contentRef.key
           const row = await this.get<ContentRow>(STORE_CONTENT, key)
           const expected = expectedContentLengths.get(item.id)
           if (!row || typeof row.content !== 'string' || (expected !== undefined && row.content.length !== expected)) {
@@ -243,7 +245,7 @@ export class IndexedDbDocumentRepository implements DocumentRepository {
       }
       const complete = { ...verified, stage: 'complete' as const }
       await this.setMeta(MIGRATION_KEY, complete)
-      return complete
+      return this.migrateV4(complete)
     } catch (error) {
       const failed: MigrationResult = {
         stage: 'failed',
@@ -253,6 +255,51 @@ export class IndexedDbDocumentRepository implements DocumentRepository {
         error: error instanceof Error ? error.message : '存储迁移失败',
       }
       await this.setMeta(MIGRATION_KEY, failed).catch(() => undefined)
+      return failed
+    }
+  }
+
+  private async migrateV4(base: MigrationResult): Promise<MigrationResult> {
+    const previous = await this.getMeta<MigrationResult>(V4_MIGRATION_KEY)
+    if (previous?.stage === 'complete') return previous
+    const running: MigrationResult = { ...base, stage: 'running', readonlyFallback: false }
+    await this.setMeta(V4_MIGRATION_KEY, running)
+    try {
+      const documents = await this.listDocuments()
+      const replacedIds: string[] = []
+      for (const document of documents) {
+        const desktopPath = document.contentRef.kind === 'desktop-file' ? document.contentRef.path : undefined
+        const nextId = desktopPath ? desktopDocumentId(desktopPath) : document.id
+        const migrated = { ...document, id: nextId, storageVersion: 4 } satisfies StoredDocumentMetadata
+        await this.put(STORE_DOCUMENTS, migrated)
+        if (nextId !== document.id) {
+          const readerState = await this.getReaderState(document.id)
+          if (readerState) await this.saveReaderState({ ...readerState, documentId: nextId })
+          const annotations = await this.listAnnotations(document.id)
+          for (const annotation of annotations) await this.saveAnnotation({ ...annotation, documentId: nextId })
+          replacedIds.push(document.id)
+        }
+      }
+      for (const oldId of replacedIds) {
+        await this.delete(STORE_DOCUMENTS, oldId)
+        await this.delete(STORE_READER_STATES, oldId)
+      }
+      const complete: MigrationResult = {
+        stage: 'complete',
+        migratedDocuments: documents.length,
+        migratedPackages: base.migratedPackages,
+        readonlyFallback: false,
+      }
+      await this.setMeta(V4_MIGRATION_KEY, complete)
+      return complete
+    } catch (error) {
+      const failed: MigrationResult = {
+        ...running,
+        stage: 'failed',
+        readonlyFallback: true,
+        error: error instanceof Error ? error.message : 'v4 存储迁移失败',
+      }
+      await this.setMeta(V4_MIGRATION_KEY, failed).catch(() => undefined)
       return failed
     }
   }
@@ -329,6 +376,9 @@ export class IndexedDbDocumentRepository implements DocumentRepository {
       await writeDocumentPayload(document)
       return contentRefFor(document)
     }
+    if (document.sourceUri && /^[a-zA-Z]:[\\/]/.test(document.sourceUri)) {
+      return contentRefFor(document)
+    }
     await this.put(STORE_CONTENT, {
       key: document.id,
       content: document.content,
@@ -352,6 +402,14 @@ export class IndexedDbDocumentRepository implements DocumentRepository {
 
   toMetadata(document: DocumentRecord, contentRef?: ContentRef) {
     return toStoredMetadata(document, contentRef)
+  }
+
+  getAppState<T>(key: string) {
+    return this.getMeta<T>(`app-state:${key}`).then((value) => value ?? null)
+  }
+
+  setAppState(key: string, value: unknown) {
+    return this.setMeta(`app-state:${key}`, value)
   }
 
   private async get<T>(store: string, key: IDBValidKey): Promise<T | null> {

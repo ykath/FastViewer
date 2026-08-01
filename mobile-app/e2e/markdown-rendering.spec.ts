@@ -84,12 +84,14 @@ test('滚动长文档时 Mermaid 图表不会重复绘制或改变页面高度',
 
   const diagrams = page.locator('.mermaid-diagram')
   await expect(diagrams.first()).toBeVisible({ timeout: 30_000 })
+  await expect(diagrams.first().locator('.mermaid-svg svg')).toBeVisible({ timeout: 30_000 })
   const diagramCount = await diagrams.count()
   expect(diagramCount).toBeGreaterThan(1)
-  await expect(page.locator('.mermaid-svg svg')).toHaveCount(diagramCount, { timeout: 30_000 })
+  const initiallyRendered = await page.locator('.mermaid-svg svg').count()
+  expect(initiallyRendered).toBeLessThan(diagramCount)
 
   await page.evaluate(() => {
-    const content = document.querySelector('.markdown-body')
+    const content = document.querySelector('.mermaid-diagram')
     const firstSvg = document.querySelector('.mermaid-svg svg')
     if (!content || !firstSvg) throw new Error('Mermaid 图表尚未准备完成')
     const state = window as typeof window & {
@@ -124,11 +126,10 @@ test('滚动长文档时 Mermaid 图表不会重复绘制或改变页面高度',
     return {
       mutations: state.mutations,
       sameSvg: state.firstSvg === document.querySelector('.mermaid-svg svg'),
-      loadingCount: document.querySelectorAll('.mermaid-status').length,
     }
   })
 
-  expect(result).toEqual({ mutations: 0, sameSvg: true, loadingCount: 0 })
+  expect(result).toEqual({ mutations: 0, sameSvg: true })
 })
 
 function createLongMermaidDocument() {

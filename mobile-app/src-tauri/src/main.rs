@@ -3,4 +3,3 @@
 fn main() {
     lightpage_lib::run();
 }
-

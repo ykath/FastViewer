@@ -5,6 +5,8 @@
 适用平台：Android、Windows 10/11  
 规划基线：LightPage v1.1.2
 
+> Windows 实施调整（2026-08-01）：桌面端不再采用资料工作区、多标签和并排阅读方案，统一回到单文件阅读；以“章节 / 当前目录文件”双视图和左侧常用目录收藏替代。下文对应条目仅保留为历史规划背景，当前行为以 `windows-v1.4-v1.5-implementation.md` 为准。
+
 ## 1. 阶段结论
 
 下一阶段不再以“补齐基础阅读器能力”为主，而是围绕两个平台形成清晰分工：
@@ -232,4 +234,3 @@ Mermaid、代码高亮、全文图片和 PDF 导出进入懒加载或独立任�
 - `mobile-app/android/app/src/main/java/com/fastviewer/app/FastViewerFilesPlugin.java`
 - `mobile-app/src-tauri/src/lib.rs`
 - `mobile-app/src-tauri/tauri.conf.json`
-

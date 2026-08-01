@@ -6,6 +6,7 @@ export class DocumentSessionManager {
   private sessions = new Map<string, DocumentSession>()
   private activeSessionId: string | null = null
   private listeners = new Set<SessionListener>()
+  private recentlyClosed: DocumentSession[] = []
 
   list() {
     return Array.from(this.sessions.values())
@@ -43,17 +44,50 @@ export class DocumentSessionManager {
   }
 
   close(sessionId: string) {
+    const closed = this.sessions.get(sessionId)
     this.sessions.delete(sessionId)
+    if (closed) this.recentlyClosed = [closed, ...this.recentlyClosed.filter((item) => item.documentId !== closed.documentId)].slice(0, 10)
     if (this.activeSessionId === sessionId) {
       this.activeSessionId = this.sessions.keys().next().value ?? null
     }
+    this.emit()
+    return closed ?? null
+  }
+
+  closed() {
+    return [...this.recentlyClosed]
+  }
+
+  reopenLast() {
+    const session = this.recentlyClosed.shift()
+    if (!session) return null
+    this.sessions.set(session.sessionId, { ...session, dormant: false })
+    this.activeSessionId = session.sessionId
+    this.emit()
+    return session
+  }
+
+  snapshot() {
+    return {
+      sessions: this.list(),
+      activeSessionId: this.activeSessionId,
+      recentlyClosed: this.recentlyClosed,
+    }
+  }
+
+  restore(snapshot: { sessions: DocumentSession[]; activeSessionId: string | null; recentlyClosed?: DocumentSession[] }) {
+    this.sessions = new Map(snapshot.sessions.map((session) => [session.sessionId, { ...session, dormant: true }]))
+    this.activeSessionId = snapshot.activeSessionId && this.sessions.has(snapshot.activeSessionId)
+      ? snapshot.activeSessionId
+      : this.sessions.keys().next().value ?? null
+    this.recentlyClosed = (snapshot.recentlyClosed ?? []).slice(0, 10)
     this.emit()
   }
 
   subscribe(listener: SessionListener) {
     this.listeners.add(listener)
     listener(this.list(), this.activeSessionId)
-    return () => this.listeners.delete(listener)
+    return () => { this.listeners.delete(listener) }
   }
 
   private emit() {

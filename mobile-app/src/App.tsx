@@ -7,6 +7,7 @@ import {
   ChevronDown,
   ChevronUp,
   Copy,
+  Command,
   FileCode2,
   FileText,
   FolderOpen,
@@ -19,6 +20,8 @@ import {
   Menu,
   MessageSquare,
   Moon,
+  Pin,
+  PinOff,
   Search,
   Settings,
   Share2,
@@ -47,10 +50,26 @@ import { buildSafeHtmlDocument, extractMarkdownHeadings, rewriteRelativeResource
 import type { HeadingItem, HtmlRenderInfo } from './html-processing'
 import { DEFAULT_READER_SETTINGS, nextThemePreference, themePreferenceLabel } from './reader-settings'
 import type { ReaderSettings, ThemeMode } from './reader-settings'
-import { desktopPlatform } from './desktop-platform'
-import type { DesktopOpenRequest } from './desktop-platform'
-import type { AnnotationAnchor, DocumentAnnotation, DocumentRepository } from './domain-models'
-import { documentSessions } from './document-session'
+import { desktopDocumentId, desktopPlatform } from './desktop-platform'
+import type { DesktopDirectoryListing, DesktopOpenRequest } from './desktop-platform'
+import type {
+  AnnotationAnchor,
+  DocumentAnnotation,
+  DocumentRepository,
+  BackgroundTask,
+} from './domain-models'
+import {
+  isDirectoryPinned,
+  displayDirectoryFromDocumentPath,
+  loadPinnedDirectories,
+  pinDirectory,
+  savePinnedDirectories,
+  unpinDirectory,
+} from './desktop-directories'
+import type { PinnedDirectory } from './desktop-directories'
+import { filterCommands, matchCommandShortcut } from './desktop-commands'
+import type { DesktopCommand } from './desktop-commands'
+import { backgroundTasks } from './background-tasks'
 import {
   annotationsToMarkdown,
   applyAnnotationHighlights,
@@ -286,6 +305,11 @@ function App() {
   const [pasteDraft, setPasteDraft] = useState<string | null>(null)
   const [failedOpenRequest, setFailedOpenRequest] = useState<NativeOpenRequest | null>(null)
   const [returnDocumentId, setReturnDocumentId] = useState<string | null>(null)
+  const [pinnedDirectories, setPinnedDirectories] = useState<PinnedDirectory[]>([])
+  const [currentDirectory, setCurrentDirectory] = useState<DesktopDirectoryListing | null>(null)
+  const [directoryBrowser, setDirectoryBrowser] = useState<DesktopDirectoryListing | null>(null)
+  const [commandPaletteOpen, setCommandPaletteOpen] = useState(false)
+  const [commandQuery, setCommandQuery] = useState('')
   const fileInputRef = useRef<HTMLInputElement>(null)
   const archiveCleanupStartedRef = useRef(false)
   const openQueueRunningRef = useRef(false)
@@ -293,6 +317,9 @@ function App() {
   const toastTimerRef = useRef<number | null>(null)
   const activeDocumentIdRef = useRef(activeDocumentId)
   const viewRef = useRef(view)
+  const documentsRef = useRef(documents)
+  const desktopRefreshTimersRef = useRef(new Map<string, number>())
+  const lastDropRef = useRef({ signature: '', receivedAt: 0, processing: false })
   const isDesktop = desktopPlatform.isDesktop()
 
   const activeDocument = documents.find((doc) => doc.id === activeDocumentId) ?? documents[0]
@@ -302,7 +329,8 @@ function App() {
   useEffect(() => {
     activeDocumentIdRef.current = activeDocumentId
     viewRef.current = view
-  }, [activeDocumentId, view])
+    documentsRef.current = documents
+  }, [activeDocumentId, documents, view])
 
   useEffect(() => {
     const media = window.matchMedia?.('(prefers-color-scheme: dark)')
@@ -324,6 +352,15 @@ function App() {
   useEffect(() => {
     desktopPlatform.applyRuntimeMarker()
   }, [])
+
+  useEffect(() => {
+    if (!documentsHydrated || !isDesktop) return undefined
+    let disposed = false
+    void loadPinnedDirectories(documentRepository).then((items) => {
+      if (!disposed) setPinnedDirectories(items)
+    })
+    return () => { disposed = true }
+  }, [documentRepository, documentsHydrated, isDesktop])
 
   useEffect(() => {
     if (!Capacitor.isNativePlatform()) return undefined
@@ -396,14 +433,29 @@ function App() {
   }, [setDocuments])
 
   const openDocument = async (doc: DocumentRecord) => {
-    const existingSession = documentSessions.list().find((item) => item.documentId === doc.id)
-    const session = existingSession ?? documentSessions.create(doc.id, doc.contentRevision ?? '', ['read', 'search'])
-    documentSessions.activate(session.sessionId)
     let openedDocument = doc
     if (doc.payloadLoaded === false) {
       setView('loading')
       try {
-        if (doc.archiveStorageId && doc.archiveRelativePath && Capacitor.isNativePlatform()) {
+        if (isDesktop && doc.sourceUri && /^[a-zA-Z]:[\\/]/.test(doc.sourceUri)) {
+          const request = await desktopPlatform.prepareDocument(doc.sourceUri, 'picker')
+          const bytes = await desktopPlatform.readDocument(request)
+          const decoded = await decodeDocumentBytes(bytes)
+          const resources = doc.fileType === 'markdown'
+            ? await desktopPlatform.loadMarkdownResources(request.path, decoded.content).catch(() => ({}))
+            : {}
+          openedDocument = {
+            ...doc,
+            fileSize: bytes.length,
+            content: decoded.content,
+            rawBase64: decoded.rawBase64,
+            encoding: decoded.encoding,
+            archiveResources: Object.keys(resources).length ? resources : undefined,
+            payloadLoaded: true,
+            contentRevision: stableDocumentId(doc.fileName, decoded.content),
+          }
+          setDocuments((items) => items.map((item) => item.id === doc.id ? openedDocument : item))
+        } else if (doc.archiveStorageId && doc.archiveRelativePath && Capacitor.isNativePlatform()) {
           const entry = await FastViewerFiles.openArchiveEntry({
             storageId: doc.archiveStorageId,
             relativePath: doc.archiveRelativePath,
@@ -425,7 +477,6 @@ function App() {
           openedDocument = await loadStoredDocument(doc.id) ?? doc
         }
       } catch {
-        documentSessions.update(session.sessionId, { status: 'failed', error: '文档正文不存在或已被系统清理。' })
         showError('FILE_NOT_FOUND', '文档正文不存在或已被系统清理。')
         return
       }
@@ -442,11 +493,6 @@ function App() {
         return documentRepository.savePackage({ ...item, lastEntryId: openedDocument.id, lastOpenedAt: openedAt })
       }).catch(() => undefined)
     }
-    documentSessions.update(session.sessionId, {
-      status: 'ready',
-      revision: openedDocument.contentRevision ?? session.revision,
-      capabilities: openedDocument.fileType === 'markdown' ? ['read', 'search', 'toc', 'annotate'] : ['read', 'search', 'toc'],
-    })
     if (
       desktopPlatform.isDesktop()
       && openedDocument.fileType === 'markdown'
@@ -466,10 +512,8 @@ function App() {
 
   const importDocument = (doc: DocumentRecord, openAfterImport = true) => {
     persistDocuments((items) => upsertDocument(items, doc))
-    setActiveDocumentId(doc.id)
     if (openAfterImport) {
-      const session = documentSessions.create(doc.id, doc.contentRevision ?? '', doc.fileType === 'markdown' ? ['read', 'search', 'toc', 'annotate'] : ['read', 'search', 'toc'])
-      documentSessions.update(session.sessionId, { status: 'ready' })
+      setActiveDocumentId(doc.id)
       setView('reader')
     }
   }
@@ -500,6 +544,7 @@ function App() {
     fileSize?: number,
     startedAt = startPerformanceSpan(),
     loadResources?: (content: string) => Promise<Record<string, string>>,
+    options: { recordId?: string; openAfterImport?: boolean; silent?: boolean } = {},
   ) => {
     finishPerformanceSpan('content-readable', startedAt, { bytes: bytes.length })
     const decodeStartedAt = startPerformanceSpan()
@@ -517,7 +562,8 @@ function App() {
       }
     }
 
-    const record = createRecordFromBytes({
+    const record = {
+      ...createRecordFromBytes({
       fileName,
       content: result.content,
       encoding: result.encoding,
@@ -526,33 +572,38 @@ function App() {
       sourceUri,
       fileSize: fileSize ?? bytes.length,
       archiveResources,
-    })
+      }),
+      ...(options.recordId ? { id: options.recordId } : {}),
+      contentRevision: stableDocumentId(fileName, result.content),
+      payloadLoaded: true,
+    }
 
-    importDocument(record)
+    importDocument(record, options.openAfterImport ?? true)
     finishPerformanceSpan('file-open', startedAt, { bytes: bytes.length, type: record.fileType })
 
     if (result.confidence === 'low') {
-      showToast('编码识别置信度较低，可在编码设置中切换', 'warning')
+      if (!options.silent) showToast('编码识别置信度较低，可在编码设置中切换', 'warning')
     }
 
     const displayType = record.fileType === 'html' ? '已安全打开 HTML 文件' : '文件已打开'
-    showToast(displayType, 'success')
+    if (!options.silent) showToast(displayType, 'success')
+    return record
   }
 
-  const importDesktopRequest = async (request: DesktopOpenRequest) => {
+  const importDesktopRequest = async (request: DesktopOpenRequest, openAfterImport = true, silent = false) => {
     const startedAt = startPerformanceSpan()
-    if (request.size >= FILE_SIZE_DANGER) {
+    if (openAfterImport && request.size >= FILE_SIZE_DANGER) {
       setView('loading')
       const action = await checkFileSizeAndConfirm(request.size)
       if (action === 'cancel') {
         setView('home')
         return
       }
-    } else if (request.size >= FILE_SIZE_WARNING) {
+    } else if (openAfterImport && request.size >= FILE_SIZE_WARNING) {
       showToast(`文件较大（${formatBytes(request.size)}），渲染可能较慢`, 'warning')
     }
 
-    setView('loading')
+    if (openAfterImport) setView('loading')
     try {
       const bytes = await desktopPlatform.readDocument(request)
       const sourceType = request.source === 'picker' ? 'Windows 文件选择器' : 'Windows 资源管理器'
@@ -564,7 +615,9 @@ function App() {
         request.size,
         startedAt,
         (content) => desktopPlatform.loadMarkdownResources(request.path, content),
+        { recordId: desktopDocumentId(request.path), openAfterImport, silent },
       )
+      if (settings.desktopRecentDocuments) void desktopPlatform.addRecentDocument(request.path).catch(() => undefined)
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Windows 文件读取失败'
       showError('UNKNOWN', message)
@@ -683,8 +736,6 @@ function App() {
       order,
       isFavorite: item.isFavorite,
     })))
-    const session = documentSessions.create(records[0].id, records[0].contentRevision ?? '', ['read', 'search', 'toc', 'annotate', 'package'])
-    documentSessions.update(session.sessionId, { status: records[0].payloadLoaded === false ? 'loading' : 'ready' })
     setActiveDocumentId(records[0].id)
     setView('reader')
     showToast(`已从压缩包导入 ${records.length} 个可查看文件`, 'success')
@@ -1016,6 +1067,177 @@ function App() {
     showToast(`已按${html ? ' HTML' : ' Markdown'}打开剪贴板内容`, 'success')
   }
 
+  const persistPinnedDirectoryState = (next: PinnedDirectory[]) => {
+    setPinnedDirectories(next)
+    void savePinnedDirectories(documentRepository, next)
+      .catch(() => showToast('目录收藏保存失败', 'warning'))
+  }
+
+  const toggleCurrentDirectoryPin = () => {
+    if (!currentDirectory) return
+    const pinned = isDirectoryPinned(pinnedDirectories, currentDirectory.path)
+    const next = pinned
+      ? unpinDirectory(pinnedDirectories, currentDirectory.path)
+      : pinDirectory(pinnedDirectories, currentDirectory.path, currentDirectory.name)
+    persistPinnedDirectoryState(next)
+    showToast(pinned ? '已取消目录收藏' : '已固定当前目录', 'success')
+  }
+
+  const openDirectoryDocument = async (path: string) => {
+    try {
+      const request = await desktopPlatform.prepareDocument(path, 'picker')
+      setDirectoryBrowser(null)
+      await importDesktopRequest(request)
+    } catch (error) {
+      showToast(error instanceof Error ? error.message : '目录中的文件无法打开', 'warning')
+    }
+  }
+
+  const browsePinnedDirectory = async (directory: PinnedDirectory) => {
+    try {
+      setDirectoryBrowser(await desktopPlatform.listDirectoryDocuments(directory.path))
+    } catch {
+      showToast(`目录“${directory.name}”不可访问，可取消收藏后重新固定`, 'warning')
+    }
+  }
+
+  const refreshDesktopDocument = async (documentId: string) => {
+    const current = documentsRef.current.find((item) => item.id === documentId)
+    if (!current?.sourceUri) return
+    try {
+      const request = await desktopPlatform.prepareDocument(current.sourceUri, 'picker')
+      const bytes = await desktopPlatform.readDocument(request)
+      const decoded = await decodeDocumentBytes(bytes)
+      const resources = current.fileType === 'markdown'
+        ? await desktopPlatform.loadMarkdownResources(request.path, decoded.content).catch(() => ({}))
+        : {}
+      persistDocuments((items) => items.map((item) => item.id === documentId ? {
+        ...item,
+        content: decoded.content,
+        rawBase64: decoded.rawBase64,
+        encoding: decoded.encoding,
+        fileSize: bytes.length,
+        archiveResources: Object.keys(resources).length ? resources : undefined,
+        contentRevision: stableDocumentId(item.fileName, decoded.content),
+        payloadLoaded: true,
+      } : item))
+      showToast(`已刷新 ${current.fileName}`, 'success')
+    } catch {
+      showToast(`${current.fileName} 已删除、移动或暂时不可访问`, 'warning')
+    }
+  }
+
+  const dispatchReaderCommand = (command: string) => {
+    window.dispatchEvent(new CustomEvent('lightpage-reader-command', { detail: command }))
+  }
+
+  const desktopCommands: DesktopCommand[] = [
+    { id: 'file.open', title: '打开文件', keywords: ['open'], shortcut: 'Ctrl+O', run: () => openFilePicker() },
+    { id: 'directory.pin', title: currentDirectory && isDirectoryPinned(pinnedDirectories, currentDirectory.path) ? '取消固定当前目录' : '固定当前目录', keywords: ['folder', 'directory'], enabled: () => Boolean(currentDirectory), run: toggleCurrentDirectoryPin },
+    { id: 'document.find', title: '在当前文档中查找', keywords: ['search'], shortcut: 'Ctrl+F', enabled: () => view === 'reader', run: () => dispatchReaderCommand('find') },
+    { id: 'document.favorite', title: activeDocument?.isFavorite ? '取消收藏当前文档' : '收藏当前文档', shortcut: 'Ctrl+D', enabled: () => Boolean(activeDocument), run: () => updateActiveDocument({ isFavorite: !activeDocument?.isFavorite }) },
+    { id: 'document.toc', title: '显示或隐藏章节目录', shortcut: 'Ctrl+B', enabled: () => view === 'reader', run: () => dispatchReaderCommand('toc') },
+    { id: 'document.export', title: '导出当前文档', shortcut: 'Ctrl+Shift+E', enabled: () => view === 'reader', run: () => dispatchReaderCommand('export') },
+    { id: 'reader.theme', title: '切换阅读主题', shortcut: 'Ctrl+Shift+T', run: () => setSettings({ ...settings, themeMode: nextThemePreference(settings.themeMode) }) },
+    { id: 'reader.font-increase', title: '增大字号', shortcut: 'Ctrl+=', enabled: () => view === 'reader', run: () => dispatchReaderCommand('font-increase') },
+    { id: 'reader.font-decrease', title: '减小字号', shortcut: 'Ctrl+-', enabled: () => view === 'reader', run: () => dispatchReaderCommand('font-decrease') },
+    { id: 'reader.font-reset', title: '恢复默认字号', shortcut: 'Ctrl+0', enabled: () => view === 'reader', run: () => dispatchReaderCommand('font-reset') },
+    { id: 'document.close', title: '关闭当前阅读页', shortcut: 'Ctrl+W', enabled: () => view === 'reader', run: () => setView('home') },
+  ]
+
+  useEffect(() => {
+    if (!isDesktop) return undefined
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.ctrlKey && event.shiftKey && event.key.toLocaleLowerCase() === 'p') {
+        event.preventDefault()
+        setCommandPaletteOpen(true)
+        return
+      }
+      if (commandPaletteOpen && event.key === 'Escape') {
+        event.preventDefault()
+        setCommandPaletteOpen(false)
+        return
+      }
+      const command = matchCommandShortcut(event, desktopCommands)
+      if (!command) return
+      event.preventDefault()
+      void command.run()
+    }
+    window.addEventListener('keydown', handleKeyDown)
+    return () => window.removeEventListener('keydown', handleKeyDown)
+  })
+
+  useEffect(() => {
+    if (!isDesktop) return undefined
+    let disposed = false
+    let remove: (() => void) | undefined
+    void desktopPlatform.listenForDrops(async (paths) => {
+      const signature = paths.map((path) => path.replace(/\\/g, '/').toLocaleLowerCase()).sort().join('|')
+      const now = Date.now()
+      if (lastDropRef.current.processing
+        || (lastDropRef.current.signature === signature && now - lastDropRef.current.receivedAt < 1_200)) return
+      lastDropRef.current = { signature, receivedAt: now, processing: true }
+      try {
+        const classified = await desktopPlatform.classifyDropPaths(paths)
+        if (disposed) return
+        if (classified.files[0]) await importDesktopRequest(classified.files[0])
+        if (classified.files.length > 1) showToast(`已打开首个文件，忽略其余 ${classified.files.length - 1} 个文件`, 'warning')
+        if (classified.directories.length > 0) showToast('请先打开目录内的文档，再从左侧固定该目录', 'warning')
+        if (classified.rejected) showToast(`${classified.rejected} 个项目不受支持或无法访问`, 'warning')
+      } finally {
+        lastDropRef.current.processing = false
+      }
+    }).then((unlisten) => {
+      if (disposed) unlisten()
+      else remove = unlisten
+    })
+    return () => {
+      disposed = true
+      remove?.()
+    }
+    // Register exactly one native listener. The handler intentionally uses the
+    // initial stable desktop bridge and state setters; re-registering caused one
+    // physical drop to be consumed several times.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isDesktop])
+
+  useEffect(() => {
+    if (!isDesktop || !activeDocument?.sourceUri) {
+      setCurrentDirectory(null)
+      return undefined
+    }
+    let disposed = false
+    void desktopPlatform.listDirectoryDocuments(activeDocument.sourceUri)
+      .then((listing) => { if (!disposed) setCurrentDirectory(listing) })
+      .catch(() => { if (!disposed) setCurrentDirectory(null) })
+    return () => { disposed = true }
+  }, [activeDocument?.contentRevision, activeDocument?.sourceUri, isDesktop])
+
+  useEffect(() => {
+    if (!isDesktop || view !== 'reader' || !activeDocument?.sourceUri) return undefined
+    let disposed = false
+    void desktopPlatform.resolveMarkdownResourcePaths(activeDocument.sourceUri, activeDocument.content)
+      .then((resources) => desktopPlatform.watchDocument(activeDocument.id, activeDocument.sourceUri as string, resources))
+      .catch(() => undefined)
+    let remove: (() => void) | undefined
+    void desktopPlatform.listenForFileChanges((change) => {
+      const existing = desktopRefreshTimersRef.current.get(change.documentId)
+      if (existing) window.clearTimeout(existing)
+      const timer = window.setTimeout(() => {
+        desktopRefreshTimersRef.current.delete(change.documentId)
+        if (!disposed) void refreshDesktopDocument(change.documentId)
+      }, 200)
+      desktopRefreshTimersRef.current.set(change.documentId, timer)
+    }).then((unlisten) => { remove = unlisten })
+    return () => {
+      disposed = true
+      remove?.()
+      void desktopPlatform.unwatchDocument(activeDocument.id)
+    }
+  // The active revision is the watcher lifecycle boundary; refreshDesktopDocument intentionally reads through refs.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeDocument?.contentRevision, activeDocument?.id, activeDocument?.sourceUri, isDesktop, view])
+
   return (
     <div className={`app-shell view-${view}`}>
       {documentsHydrated && <input
@@ -1039,6 +1261,11 @@ function App() {
             onPickFile={() => { void openFilePicker() }}
             onPasteOpen={() => { void openPasteDialog() }}
             onDelete={deleteDocument}
+            onRevealFile={isDesktop ? (document) => {
+              if (!document.sourceUri) return
+              void desktopPlatform.revealInFileManager(document.sourceUri)
+                .catch(() => showToast('无法通过资源管理器打开文件所在目录', 'warning'))
+            } : undefined}
             onClearTab={(tab) => {
               if (tab === 'favorite') {
                 persistDocuments((items) => items.map((item) => ({ ...item, isFavorite: false })))
@@ -1090,6 +1317,10 @@ function App() {
             onSetSettings={setSettings}
             onOpenPackageDocument={(item) => { void openDocument(item) }}
             annotationRepository={documentRepository}
+            directoryListing={currentDirectory}
+            directoryPinned={Boolean(currentDirectory && isDirectoryPinned(pinnedDirectories, currentDirectory.path))}
+            onToggleDirectoryPin={toggleCurrentDirectoryPin}
+            onOpenDirectoryDocument={(path) => { void openDirectoryDocument(path) }}
           />
         )}
 
@@ -1113,12 +1344,28 @@ function App() {
       <BottomNav
         currentView={view}
         hasReader={Boolean(activeDocument)}
+        pinnedDirectories={pinnedDirectories}
+        activeDirectoryPath={directoryBrowser?.path ?? currentDirectory?.path}
+        onBrowseDirectory={(directory) => { void browsePinnedDirectory(directory) }}
+        onRemoveDirectory={(directory) => {
+          persistPinnedDirectoryState(unpinDirectory(pinnedDirectories, directory.path))
+          if (directoryBrowser?.path === directory.path) setDirectoryBrowser(null)
+        }}
         onNavigate={(nextView) => {
           if (nextView === 'reader' && !activeDocument) return
           if (nextView === 'loading') return
           setView(nextView)
         }}
       />
+
+      {isDesktop && directoryBrowser && (
+        <DirectoryBrowserPopover
+          listing={directoryBrowser}
+          activeDocumentPath={activeDocument?.sourceUri}
+          onOpen={(path) => { void openDirectoryDocument(path) }}
+          onClose={() => setDirectoryBrowser(null)}
+        />
+      )}
 
       {largeSizeConfirm && (
         <div className="sheet-backdrop" role="presentation">
@@ -1185,6 +1432,15 @@ function App() {
           {toast.message}
         </div>
       )}
+
+      {commandPaletteOpen && (
+        <CommandPalette
+          commands={desktopCommands}
+          query={commandQuery}
+          onQuery={setCommandQuery}
+          onClose={() => { setCommandPaletteOpen(false); setCommandQuery('') }}
+        />
+      )}
     </div>
   )
 }
@@ -1197,6 +1453,7 @@ type HomePageProps = {
   onPickFile: () => void
   onPasteOpen: () => void
   onDelete: (doc: DocumentRecord) => void
+  onRevealFile?: (doc: DocumentRecord) => void
   onClearTab: (tab: HomeTab) => void
   onToggleFavorite: (doc: DocumentRecord) => void
 }
@@ -1209,6 +1466,7 @@ function HomePage({
   onPickFile,
   onPasteOpen,
   onDelete,
+  onRevealFile,
   onClearTab,
   onToggleFavorite,
 }: HomePageProps) {
@@ -1340,7 +1598,9 @@ function HomePage({
         {files.length === 0 ? (
           <EmptyState tab={activeTab} />
         ) : (
-          files.slice(0, visibleCount).map((file) => (
+          files.slice(0, visibleCount).map((file) => {
+            const directoryPath = file.sourceUri ? displayDirectoryFromDocumentPath(file.sourceUri) : ''
+            return (
             <article className="file-row" key={file.id}>
               <button className="file-open-button" type="button" onClick={() => onOpenFile(file)}>
                 <span className={`file-icon ${file.fileType}`}>
@@ -1355,10 +1615,27 @@ function HomePage({
                   <span className="file-meta">
                     {file.sourceType} · {formatBytes(file.fileSize)} · {formatTime(file.lastOpenedAt)}
                   </span>
+                  {directoryPath && (
+                    <span className="file-directory" title={directoryPath}>
+                      <FolderOpen size={12} />
+                      <span>{directoryPath}</span>
+                    </span>
+                  )}
                 </span>
                 <span className="file-kind">{file.packageId ? '文档包' : file.fileExtension.toUpperCase()}</span>
               </button>
               <div className="file-row-actions">
+                {directoryPath && onRevealFile && (
+                  <button
+                    className="row-action"
+                    type="button"
+                    aria-label={`在资源管理器中显示 ${file.fileName}`}
+                    title={`在资源管理器中显示：${directoryPath}`}
+                    onClick={() => onRevealFile(file)}
+                  >
+                    <FolderOpen size={16} />
+                  </button>
+                )}
                 <button
                   className={file.isFavorite ? 'row-action active' : 'row-action'}
                   type="button"
@@ -1377,7 +1654,8 @@ function HomePage({
                 </button>
               </div>
             </article>
-          ))
+            )
+          })
         )}
         {visibleCount < files.length && (
           <button className="load-more" type="button" onClick={() => setVisibleCount((count) => count + 50)}>
@@ -1386,6 +1664,28 @@ function HomePage({
         )}
       </section>
     </section>
+  )
+}
+
+function CommandPalette({ commands, query, onQuery, onClose }: {
+  commands: DesktopCommand[]
+  query: string
+  onQuery: (query: string) => void
+  onClose: () => void
+}) {
+  const filtered = filterCommands(commands, query)
+  return (
+    <div className="command-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose() }}>
+      <section className="command-palette" role="dialog" aria-modal="true" aria-label="命令面板">
+        <label><Command size={18} /><input autoFocus value={query} onChange={(event) => onQuery(event.target.value)} placeholder="输入命令名称" /></label>
+        <div role="listbox">
+          {filtered.map((command) => (
+            <button key={command.id} type="button" onClick={() => { onClose(); void command.run() }}><span>{command.title}</span><kbd>{command.shortcut}</kbd></button>
+          ))}
+          {filtered.length === 0 && <p>没有匹配的命令</p>}
+        </div>
+      </section>
+    </div>
   )
 }
 
@@ -1400,6 +1700,10 @@ type ReaderPageProps = {
   onSetSettings: (settings: ReaderSettings) => void
   onOpenPackageDocument: (document: DocumentRecord) => void
   annotationRepository: DocumentRepository
+  directoryListing: DesktopDirectoryListing | null
+  directoryPinned: boolean
+  onToggleDirectoryPin: () => void
+  onOpenDirectoryDocument: (path: string) => void
 }
 
 function ReaderPage({
@@ -1413,6 +1717,10 @@ function ReaderPage({
   onSetSettings,
   onOpenPackageDocument,
   annotationRepository,
+  directoryListing,
+  directoryPinned,
+  onToggleDirectoryPin,
+  onOpenDirectoryDocument,
 }: ReaderPageProps) {
   const isDesktop = desktopPlatform.isDesktop()
   const [searchOpen, setSearchOpen] = useState(false)
@@ -1422,6 +1730,7 @@ function ReaderPage({
   const [searchCount, setSearchCount] = useState(0)
   const [tocOpen, setTocOpen] = useState(false)
   const [desktopTocOpen, setDesktopTocOpen] = useState(true)
+  const [desktopDirectoryMode, setDesktopDirectoryMode] = useState<'chapters' | 'files'>('chapters')
   const [tocQuery, setTocQuery] = useState('')
   const [tocExpanded, setTocExpanded] = useState(true)
   const [activeHeadingId, setActiveHeadingId] = useState(document.lastReadHeadingId ?? '')
@@ -1944,6 +2253,22 @@ function ReaderPage({
     })
   }
 
+  useEffect(() => {
+    const handleCommand = (event: Event) => {
+      const command = (event as CustomEvent<string>).detail
+      if (command === 'find') setSearchOpen(true)
+      else if (command === 'toc') setDesktopTocOpen((open) => !open)
+      else if (command === 'export') setMenuOpen(true)
+      else if (command === 'font-increase') changeFontSize(1)
+      else if (command === 'font-decrease') changeFontSize(-1)
+      else if (command === 'font-reset') onSetSettings({ ...settings, fontSizeLevel: 2 })
+    }
+    window.addEventListener('lightpage-reader-command', handleCommand)
+    return () => window.removeEventListener('lightpage-reader-command', handleCommand)
+  // Reader commands intentionally bind the current settings snapshot.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [settings])
+
   const toggleFavorite = () => {
     onUpdate({ isFavorite: !document.isFavorite })
     if (document.packageId) {
@@ -2231,6 +2556,11 @@ function ReaderPage({
   }
 
   const [exporting, setExporting] = useState(false)
+  const [activeBackgroundTasks, setActiveBackgroundTasks] = useState<BackgroundTask[]>([])
+
+  useEffect(() => backgroundTasks.subscribe((tasks) => {
+    setActiveBackgroundTasks(tasks.filter((task) => ['queued', 'running'].includes(task.status)))
+  }), [])
 
   const authorizeHtmlResources = async () => {
     try {
@@ -2302,12 +2632,16 @@ function ReaderPage({
     setExporting(true)
     setMenuOpen(false)
     const exportStartedAt = startPerformanceSpan()
+    const { task, signal } = backgroundTasks.begin('pdf-export', `正在导出 ${document.fileName}`)
     try {
+      backgroundTasks.update(task.id, { progress: 0.1 })
       if (Capacitor.isNativePlatform()) {
         const content = document.fileType === 'html' && htmlInfo
           ? htmlInfo.plainText
           : document.content
         const result = await FastViewerFiles.createPdf({ title: document.fileName, content })
+        if (signal.aborted) throw new DOMException('导出已取消', 'AbortError')
+        backgroundTasks.update(task.id, { progress: 0.85 })
         await Share.share({
           title: `${document.fileName} PDF`,
           files: [result.uri],
@@ -2336,20 +2670,30 @@ function ReaderPage({
       frameDoc.open()
       frameDoc.write(printHtml)
       frameDoc.close()
+      backgroundTasks.update(task.id, { progress: 0.45 })
 
       await new Promise<void>((resolve) => {
         printFrame.onload = () => resolve()
         setTimeout(resolve, 1500)
       })
 
+      if (signal.aborted) throw new DOMException('导出已取消', 'AbortError')
+      backgroundTasks.update(task.id, { progress: 0.85 })
+
       printFrame.contentWindow?.print()
       setTimeout(() => printFrame.remove(), 3000)
       onShowToast('已调起浏览器打印/PDF 导出', 'success')
       finishPerformanceSpan('pdf-export', exportStartedAt, { browserPrint: true })
+      backgroundTasks.complete(task.id)
     } catch (err) {
       const msg = err instanceof Error ? err.message : '未知错误'
-      onShowToast(`PDF 导出失败：${msg}`, 'warning')
+      if (signal.aborted) onShowToast('PDF 导出已取消', 'warning')
+      else {
+        backgroundTasks.fail(task.id, msg)
+        onShowToast(`PDF 导出失败：${msg}`, 'warning')
+      }
     } finally {
+      if (!signal.aborted && backgroundTasks.list().find((item) => item.id === task.id)?.status === 'running') backgroundTasks.complete(task.id)
       setExporting(false)
     }
   }
@@ -2359,6 +2703,7 @@ function ReaderPage({
     setExporting(true)
     setMenuOpen(false)
     const exportStartedAt = startPerformanceSpan()
+    const { task, signal } = backgroundTasks.begin('image-export', `正在生成 ${document.fileName} 图片`)
     try {
       let targetElement: HTMLElement | null = null
       let canvas: HTMLCanvasElement
@@ -2390,6 +2735,8 @@ function ReaderPage({
           windowWidth: width,
         })
       }
+      if (signal.aborted) throw new DOMException('导出已取消', 'AbortError')
+      backgroundTasks.update(task.id, { progress: 0.55 })
 
       let outputCanvases = [canvas]
       if (mode === 'visible') {
@@ -2410,6 +2757,8 @@ function ReaderPage({
             fileName: `${baseName}${outputCanvases.length > 1 ? `-${index + 1}` : ''}.png`,
             bytes: await canvasToPngBytes(outputCanvas),
           })))
+          if (signal.aborted) throw new DOMException('导出已取消', 'AbortError')
+          backgroundTasks.update(task.id, { progress: 0.85 })
           const saved = await desktopPlatform.saveImages(imageFiles)
           if (!saved) return
           finishPerformanceSpan('image-export', exportStartedAt, {
@@ -2437,6 +2786,7 @@ function ReaderPage({
 
       const uris: string[] = []
       for (let index = 0; index < outputCanvases.length; index += 1) {
+        if (signal.aborted) throw new DOMException('导出已取消', 'AbortError')
         const suffix = outputCanvases.length > 1 ? `-${index + 1}` : ''
         const imgPath = `share/${document.fileName.replace(/\.[^.]+$/, '')}${suffix}.png`
         const base64Data = outputCanvases[index].toDataURL('image/png').split(',')[1]
@@ -2452,10 +2802,13 @@ function ReaderPage({
       })
     } catch (err) {
       const msg = err instanceof Error ? err.message : '未知错误'
-      if (!msg.includes('cancel') && !msg.includes('dismiss')) {
+      if (signal.aborted) onShowToast('图片生成已取消', 'warning')
+      else if (!msg.includes('cancel') && !msg.includes('dismiss')) {
+        backgroundTasks.fail(task.id, msg)
         onShowToast(`图片生成失败：${msg}`, 'warning')
       }
     } finally {
+      if (!signal.aborted && backgroundTasks.list().find((item) => item.id === task.id)?.status === 'running') backgroundTasks.complete(task.id)
       setExporting(false)
     }
   }
@@ -2544,7 +2897,7 @@ function ReaderPage({
     try {
       const scroll = () => {
         if (document.fileType === 'html') iframeRef.current?.contentDocument?.getElementById(heading.id)?.scrollIntoView({ block: 'start' })
-        else window.document.getElementById(heading.id)?.scrollIntoView({ block: 'start' })
+        else contentRef.current?.querySelector<HTMLElement>(`#${CSS.escape(heading.id)}`)?.scrollIntoView({ block: 'start' })
       }
       scroll()
       window.setTimeout(scroll, 60)
@@ -2573,20 +2926,57 @@ function ReaderPage({
         <p className="sheet-empty">当前文档没有标题。</p>
       ) : (
         <div className="toc-list">
-          {visibleHeadings.map((heading) => (
-            <button
-              key={heading.id}
-              className={`toc-item level-${heading.level}${activeHeadingId === heading.id ? ' active' : ''}`}
-              type="button"
-              onClick={() => jumpToHeading(heading, closeMobileDirectory)}
-            >
-              {heading.text}
-            </button>
-          ))}
+          {visibleHeadings.map((heading) => {
+            // This callback runs only after user input, when reading the content refs is valid.
+            // eslint-disable-next-line react-hooks/refs
+            const handleHeadingClick = () => jumpToHeading(heading, closeMobileDirectory)
+            return (
+              <button
+                key={heading.id}
+                className={`toc-item level-${heading.level}${activeHeadingId === heading.id ? ' active' : ''}`}
+                type="button"
+                onClick={handleHeadingClick}
+              >
+                {heading.text}
+              </button>
+            )
+          })}
         </div>
       )}
     </>
   )
+
+  const renderCurrentDirectory = () => {
+    if (!directoryListing) {
+      return <p className="sheet-empty">当前文件没有可访问的本地目录。</p>
+    }
+    if (directoryListing.files.length === 0) {
+      return <p className="sheet-empty">当前目录没有 Markdown 或 HTML 文档。</p>
+    }
+    const activePath = document.sourceUri?.replace(/\\/g, '/').toLocaleLowerCase()
+    return (
+      <div className="directory-document-list" aria-label="当前目录文档">
+        {directoryListing.files.map((file) => {
+          const selected = file.path.replace(/\\/g, '/').toLocaleLowerCase() === activePath
+          return (
+            <button
+              key={file.path}
+              className={`directory-document${selected ? ' active' : ''}`}
+              type="button"
+              disabled={selected}
+              title={file.path}
+              onClick={() => onOpenDirectoryDocument(file.path)}
+            >
+              {file.fileName.toLocaleLowerCase().endsWith('.html') || file.fileName.toLocaleLowerCase().endsWith('.htm')
+                ? <FileCode2 size={16} />
+                : <FileText size={16} />}
+              <span><strong>{file.fileName}</strong><small>{formatBytes(file.size)}</small></span>
+            </button>
+          )
+        })}
+      </div>
+    )
+  }
 
   const renderFileMenuActions = () => (
     <div className="menu-list">
@@ -2708,7 +3098,7 @@ function ReaderPage({
             aria-expanded={desktopTocOpen}
           >
             <ListTree size={17} />
-            <span>章节</span>
+            <span>目录</span>
           </button>
           <button
             className={`desktop-toolbar-button desktop-only${menuOpen ? ' active' : ''}`}
@@ -2772,7 +3162,7 @@ function ReaderPage({
 
       <aside
         className="desktop-toc desktop-only"
-        aria-label="章节目录"
+        aria-label="文档导航"
         onWheel={handleDesktopTocWheel}
         onPointerDown={(event) => event.stopPropagation()}
         onPointerMove={(event) => event.stopPropagation()}
@@ -2780,20 +3170,57 @@ function ReaderPage({
         onPointerCancel={(event) => event.stopPropagation()}
       >
         <header className="desktop-toc-header">
-          <div>
-            <span>章节</span>
-            <small>{headings.length} 个标题</small>
+          <div className="desktop-directory-tabs" role="tablist" aria-label="目录内容">
+            <button
+              type="button"
+              role="tab"
+              aria-selected={desktopDirectoryMode === 'chapters'}
+              className={desktopDirectoryMode === 'chapters' ? 'active' : ''}
+              onClick={() => setDesktopDirectoryMode('chapters')}
+            >
+              章节
+            </button>
+            <button
+              type="button"
+              role="tab"
+              aria-selected={desktopDirectoryMode === 'files'}
+              className={desktopDirectoryMode === 'files' ? 'active' : ''}
+              onClick={() => setDesktopDirectoryMode('files')}
+            >
+              当前目录
+            </button>
           </div>
-          <button className="icon-button" type="button" onClick={() => setDesktopTocOpen(false)} aria-label="收起章节">
+          <button className="icon-button" type="button" onClick={() => setDesktopTocOpen(false)} aria-label="收起目录">
             <X size={17} />
           </button>
         </header>
-        <div className="desktop-toc-content" role="region" aria-label="可滚动章节列表" tabIndex={0}>
-          {renderTableOfContents(false)}
+        {directoryListing && desktopDirectoryMode === 'files' && (
+          <div className="current-directory-path">
+            <span title={directoryListing.path}>{directoryListing.path}</span>
+            <button
+              type="button"
+              className={directoryPinned ? 'active' : ''}
+              onClick={onToggleDirectoryPin}
+              title={`${directoryPinned ? '取消固定' : '固定到左侧'}：${directoryListing.path}`}
+            >
+              {directoryPinned ? <PinOff size={14} /> : <Pin size={14} />}
+              {directoryPinned ? '取消固定' : '固定到左侧'}
+            </button>
+          </div>
+        )}
+        <div className="desktop-toc-content" role="region" aria-label={desktopDirectoryMode === 'chapters' ? '可滚动章节列表' : '当前目录文档列表'} tabIndex={0}>
+          {desktopDirectoryMode === 'chapters' ? renderTableOfContents(false) : renderCurrentDirectory()}
         </div>
       </aside>
 
       <div className="reader-document-pane">
+
+      {activeBackgroundTasks.map((task) => (
+        <div className="background-task-banner" role="status" key={task.id}>
+          <span>{task.message ?? '后台任务'} · {Math.round(task.progress * 100)}%</span>
+          <button type="button" onClick={() => backgroundTasks.cancel(task.id)}>取消</button>
+        </div>
+      ))}
 
       <div className="reader-status">
         <span>{statusText}</span>
@@ -3301,10 +3728,14 @@ function EmptyState({ tab }: { tab: HomeTab }) {
 type BottomNavProps = {
   currentView: View
   hasReader: boolean
+  pinnedDirectories: PinnedDirectory[]
+  activeDirectoryPath?: string
   onNavigate: (view: View) => void
+  onBrowseDirectory: (directory: PinnedDirectory) => void
+  onRemoveDirectory: (directory: PinnedDirectory) => void
 }
 
-function BottomNav({ currentView, hasReader, onNavigate }: BottomNavProps) {
+function BottomNav({ currentView, hasReader, pinnedDirectories, activeDirectoryPath, onNavigate, onBrowseDirectory, onRemoveDirectory }: BottomNavProps) {
   return (
     <nav className="bottom-nav" aria-label="主导航">
       <div className="desktop-nav-brand desktop-only" aria-hidden="true">
@@ -3336,7 +3767,63 @@ function BottomNav({ currentView, hasReader, onNavigate }: BottomNavProps) {
         <Settings size={20} />
         <span>设置</span>
       </button>
+      {pinnedDirectories.length > 0 && (
+        <div className="pinned-directory-list desktop-only" aria-label="收藏目录">
+          {pinnedDirectories.map((directory) => (
+            <div className="pinned-directory-item" key={directory.id}>
+              <button
+                className={activeDirectoryPath?.replace(/\\/g, '/').toLocaleLowerCase() === directory.path.replace(/\\/g, '/').toLocaleLowerCase() ? 'active' : ''}
+                type="button"
+                title={directory.path}
+                aria-label={`查看目录 ${directory.name}`}
+                onClick={() => onBrowseDirectory(directory)}
+              >
+                <FolderOpen size={19} />
+                <span>{directory.name}</span>
+              </button>
+              <button
+                className="pinned-directory-remove"
+                type="button"
+                title={`取消收藏：${directory.path}`}
+                aria-label={`取消收藏目录 ${directory.name}`}
+                onClick={() => onRemoveDirectory(directory)}
+              >
+                <X size={11} />
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
     </nav>
+  )
+}
+
+function DirectoryBrowserPopover({ listing, activeDocumentPath, onOpen, onClose }: {
+  listing: DesktopDirectoryListing
+  activeDocumentPath?: string
+  onOpen: (path: string) => void
+  onClose: () => void
+}) {
+  const activePath = activeDocumentPath?.replace(/\\/g, '/').toLocaleLowerCase()
+  return (
+    <aside className="directory-browser-popover desktop-only" aria-label={`目录 ${listing.name}`}>
+      <header>
+        <div><strong>{listing.name}</strong><small title={listing.path}>{listing.path}</small></div>
+        <button className="icon-button" type="button" onClick={onClose} aria-label="关闭目录"><X size={16} /></button>
+      </header>
+      <div className="directory-browser-files">
+        {listing.files.length === 0 && <p className="sheet-empty">目录中没有 Markdown 或 HTML 文档。</p>}
+        {listing.files.map((file) => {
+          const selected = file.path.replace(/\\/g, '/').toLocaleLowerCase() === activePath
+          return (
+            <button key={file.path} type="button" className={selected ? 'active' : ''} disabled={selected} title={file.path} onClick={() => onOpen(file.path)}>
+              <FileText size={16} />
+              <span><strong>{file.fileName}</strong><small>{formatBytes(file.size)}</small></span>
+            </button>
+          )
+        })}
+      </div>
+    </aside>
   )
 }
 

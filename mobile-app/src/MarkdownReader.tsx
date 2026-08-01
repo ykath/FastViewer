@@ -11,7 +11,7 @@ import MermaidDiagram from './MermaidDiagram'
 import rehypeCodeHighlight from './rehype-code-highlight'
 import remarkDisplayMath from './remark-display-math'
 import type { ThemeMode } from './reader-settings'
-import { buildRenderPlan, createRenderPlan } from './render-plan'
+import { buildRenderPlan, createRenderPlan, reconcileRenderPlans } from './render-plan'
 import type { RenderBlock, RenderPlan } from './render-plan'
 
 type MarkdownReaderProps = {
@@ -31,6 +31,7 @@ const PROGRESSIVE_THRESHOLD = 1024 * 1024
 
 function MarkdownReader({ content, documentPath, resources, contentRef, themeMode, onOpenExternalLink, searchQuery = '', forceHeadingId, onPlanReady, onRenderChange }: MarkdownReaderProps) {
   const [asyncPlan, setAsyncPlan] = useState<RenderPlan | null>(null)
+  const lastCompletedPlanRef = useRef<RenderPlan | null>(null)
   const immediatePlan = useMemo(() => content.length < PROGRESSIVE_THRESHOLD ? createRenderPlan(content) : null, [content])
   const previewPlan = useMemo(
     () => content.length >= PROGRESSIVE_THRESHOLD ? createRenderPlan(content.slice(0, 128 * 1024)) : null,
@@ -45,12 +46,19 @@ function MarkdownReader({ content, documentPath, resources, contentRef, themeMod
     }
     let cancelled = false
     void buildRenderPlan(content).then((result) => {
-      if (!cancelled) setAsyncPlan(result)
+      if (!cancelled) {
+        const reconciled = reconcileRenderPlans(lastCompletedPlanRef.current, result)
+        lastCompletedPlanRef.current = reconciled
+        setAsyncPlan(reconciled)
+      }
     })
     return () => { cancelled = true }
   }, [content, immediatePlan])
   useEffect(() => {
-    if (completedPlan) onPlanReady?.(completedPlan)
+    if (completedPlan) {
+      lastCompletedPlanRef.current = completedPlan
+      onPlanReady?.(completedPlan)
+    }
   }, [completedPlan, onPlanReady])
 
   const components = useMemo(
@@ -187,7 +195,7 @@ function createMarkdownComponents(
   }
 }
 
-function ProgressiveBlock({
+const ProgressiveBlock = memo(function ProgressiveBlock({
   block,
   initiallyVisible,
   forced,
@@ -269,7 +277,15 @@ function ProgressiveBlock({
       )}
     </div>
   )
-}
+}, (previous, next) => previous.block.revision === next.block.revision
+  && previous.block.id === next.block.id
+  && previous.forced === next.forced
+  && previous.initiallyVisible === next.initiallyVisible
+  && previous.documentPath === next.documentPath
+  && previous.resources === next.resources
+  && previous.themeMode === next.themeMode
+  && previous.onOpenExternalLink === next.onOpenExternalLink
+  && previous.onRenderChange === next.onRenderChange)
 
 function ScrollableTableWrap({ children }: { children: React.ReactNode }) {
   const wrapRef = useRef<HTMLDivElement>(null)

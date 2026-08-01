@@ -6,7 +6,7 @@ test.use({
   hasTouch: false,
 })
 
-test('桌面端使用侧边导航、常驻章节栏和点击定位的文件菜单', async ({ page }) => {
+test('桌面端使用单文件阅读、章节/当前目录导航和点击定位的文件菜单', async ({ page }) => {
   await page.goto('/')
   await expect(page.getByRole('heading', { name: '轻页' })).toBeVisible()
   await page.locator('input[type="file"]').setInputFiles({
@@ -28,16 +28,29 @@ test('桌面端使用侧边导航、常驻章节栏和点击定位的文件菜�
 
   const directory = page.locator('.desktop-toc')
   await expect(directory).toBeVisible()
+  const chapterTab = directory.getByRole('tab', { name: '章节' })
+  const currentDirectoryTab = directory.getByRole('tab', { name: '当前目录' })
+  await expect(chapterTab).toHaveAttribute('aria-selected', 'true')
+  const chapterTabBox = await chapterTab.boundingBox()
+  const currentDirectoryTabBox = await currentDirectoryTab.boundingBox()
+  expect(Math.abs((chapterTabBox?.y ?? 0) - (currentDirectoryTabBox?.y ?? 0))).toBeLessThanOrEqual(1)
+  expect(currentDirectoryTabBox?.x ?? 0).toBeGreaterThan(chapterTabBox?.x ?? 0)
   await expect(directory.getByRole('button', { name: '第一章' })).toBeVisible()
   const documentPaneBox = await page.locator('.reader-document-pane').boundingBox()
   expect(documentPaneBox).not.toBeNull()
   expect(documentPaneBox?.x).toBeGreaterThanOrEqual(384)
   expect(documentPaneBox?.width).toBeGreaterThan(900)
 
-  await page.getByRole('button', { name: '章节', exact: true }).click()
+  await currentDirectoryTab.click()
+  await expect(directory.getByText('当前文件没有可访问的本地目录。')).toBeVisible()
+  await chapterTab.click()
+  await expect(directory.getByRole('button', { name: '第一章' })).toBeVisible()
+
+  await page.getByRole('button', { name: '目录', exact: true }).click()
   await expect(directory).toBeHidden()
-  await page.getByRole('button', { name: '章节', exact: true }).click()
+  await page.getByRole('button', { name: '目录', exact: true }).click()
   await expect(directory).toBeVisible()
+  await expect(page.locator('.desktop-tab-bar')).toHaveCount(0)
 
   const fileMenuButton = page.getByRole('button', { name: '文件操作', exact: true })
   const fileMenuButtonBox = await fileMenuButton.boundingBox()

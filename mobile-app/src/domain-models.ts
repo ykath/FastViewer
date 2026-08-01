@@ -73,6 +73,78 @@ export type DocumentSession = {
   revision: string
   status: DocumentSessionStatus
   capabilities: string[]
+  searchQuery?: string
+  searchIndex?: number
+  tocOpen?: boolean
+  pane?: 'primary' | 'secondary'
+  dormant?: boolean
+  dirtyDraft?: boolean
+  error?: string
+}
+
+export type WorkspaceStatus = 'online' | 'offline' | 'indexing' | 'ready' | 'failed'
+
+export type WorkspaceRecord = {
+  id: string
+  name: string
+  rootPath: string
+  status: WorkspaceStatus
+  exclusions: string[]
+  expandedPaths: string[]
+  createdAt: string
+  updatedAt: string
+}
+
+export type WorkspaceTreeNode = {
+  workspaceId: string
+  relativePath: string
+  name: string
+  kind: 'directory' | 'file'
+  hasChildren: boolean
+  size?: number
+  modifiedAt?: number
+}
+
+export type WorkspaceSearchHit = {
+  workspaceId: string
+  relativePath: string
+  fileName: string
+  title: string
+  snippet: string
+  line: number
+  column: number
+  score: number
+}
+
+export type WorkspaceIndexState = {
+  workspaceId: string
+  phase: 'idle' | 'indexing' | 'complete' | 'cancelled' | 'failed'
+  scanned: number
+  indexed: number
+  total?: number
+  error?: string
+}
+
+export type DesktopFileChange = {
+  documentId: string
+  kind: 'created' | 'modified' | 'removed' | 'changed'
+}
+
+export type DesktopSessionLayout = {
+  activeSessionId: string | null
+  secondarySessionId: string | null
+  split: boolean
+  syncHeadings: boolean
+  restoreOnLaunch: boolean
+  recentlyClosedDocumentIds: string[]
+}
+
+export type BackgroundTask = {
+  id: string
+  type: 'image-export' | 'pdf-export' | 'workspace-index' | 'mermaid'
+  status: 'queued' | 'running' | 'cancelled' | 'complete' | 'failed'
+  progress: number
+  message?: string
   error?: string
 }
 
@@ -130,6 +202,8 @@ export interface DocumentRepository {
   deletePackage(id: string): Promise<void>
   listPackageEntries(packageId: string): Promise<PackageEntry[]>
   savePackageEntries(entries: PackageEntry[]): Promise<void>
+  getAppState<T>(key: string): Promise<T | null>
+  setAppState(key: string, value: unknown): Promise<void>
 }
 
 export interface ContentSourceAdapter {

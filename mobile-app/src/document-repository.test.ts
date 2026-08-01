@@ -3,6 +3,7 @@ import 'fake-indexeddb/auto'
 import { beforeEach, describe, expect, it } from 'vitest'
 import { IndexedDbDocumentRepository } from './document-repository'
 import type { DocumentRecord } from './document-types'
+import { desktopDocumentId } from './desktop-identity'
 
 function record(id: string, patch: Partial<DocumentRecord> = {}): DocumentRecord {
   return {
@@ -33,7 +34,7 @@ async function deleteDatabase(name: string) {
   })
 }
 
-describe('IndexedDB v3 文档仓储', () => {
+describe('IndexedDB v4 文档仓储', () => {
   beforeEach(async () => {
     localStorage.clear()
     await deleteDatabase('lightpage-v3')
@@ -46,7 +47,7 @@ describe('IndexedDB v3 文档仓储', () => {
     expect(result.stage).toBe('complete')
     const metadata = (await repository.listDocuments())[0]
     expect(metadata).not.toHaveProperty('content')
-    expect(metadata.storageVersion).toBe(3)
+    expect(metadata.storageVersion).toBe(4)
     await expect(repository.loadPayload(metadata)).resolves.toMatchObject({ content: '# lazy' })
     await expect(repository.migrate()).resolves.toMatchObject({ stage: 'complete', migratedDocuments: 1 })
   })
@@ -76,5 +77,19 @@ describe('IndexedDB v3 文档仓储', () => {
     await repository.deleteDocument('notes')
     expect(await repository.getDocument('notes')).toBeNull()
     expect(await repository.listAnnotations('notes')).toHaveLength(0)
+  })
+
+  it('将旧桌面内容 ID 迁移为稳定路径 ID并保留阅读状态', async () => {
+    const path = 'C:\\资料\\指南.md'
+    const repository = new IndexedDbDocumentRepository([record('content-derived-id', {
+      sourceUri: path,
+      lastReadPosition: 42,
+      lastReadProgress: 0.4,
+    })])
+    await repository.migrate()
+    const stableId = desktopDocumentId(path)
+    expect(await repository.getDocument('content-derived-id')).toBeNull()
+    expect(await repository.getDocument(stableId)).toMatchObject({ id: stableId, contentRef: { kind: 'desktop-file', path } })
+    expect(await repository.getReaderState(stableId)).toMatchObject({ position: 42, progress: 0.4 })
   })
 })

@@ -11,6 +11,7 @@ import {
 import type { ReaderSettings, ThemeMode } from './reader-settings'
 import { clearNativeRegenerableCache, formatStorageBytes, getNativeStorageStatus } from './native-storage'
 import type { NativeStorageStatus } from './native-storage'
+import { desktopPlatform } from './desktop-platform'
 
 type Props = {
   settings: ReaderSettings
@@ -22,11 +23,22 @@ export default function SettingsPage({ settings, resolvedTheme, onSetSettings }:
   const [infoSheet, setInfoSheet] = useState<'help' | 'privacy' | 'performance' | 'storage' | null>(null)
   const [storageStatus, setStorageStatus] = useState<NativeStorageStatus | null>(null)
   const [clearingStorage, setClearingStorage] = useState(false)
+  const [htmlOpenWith, setHtmlOpenWith] = useState(settings.desktopHtmlOpenWith)
+  const isDesktop = desktopPlatform.isDesktop()
   const performanceMetrics = readPerformanceMetrics().slice(-20).reverse()
   useEffect(() => {
     if (infoSheet !== 'storage') return
     void getNativeStorageStatus().then(setStorageStatus).catch(() => setStorageStatus(null))
   }, [infoSheet])
+  useEffect(() => {
+    if (!isDesktop) return
+    void desktopPlatform.getHtmlOpenWith().then((enabled) => {
+      setHtmlOpenWith(enabled)
+      if (enabled !== settings.desktopHtmlOpenWith) onSetSettings({ ...settings, desktopHtmlOpenWith: enabled })
+    }).catch(() => undefined)
+  // Native association is read once when the settings page opens.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isDesktop])
   return (
     <section className="page page-settings" aria-label="设置">
       <header className="simple-header"><div><p className="eyebrow">Settings</p><h1>设置</h1></div></header>
@@ -45,10 +57,18 @@ export default function SettingsPage({ settings, resolvedTheme, onSetSettings }:
         <SettingRow icon={<Archive size={19} />} title="存储空间" description="查看耐久数据、缓存、外部打开队列和剩余空间" value="查看" onClick={() => setInfoSheet('storage')} />
         <SettingRow icon={<ShieldCheck size={19} />} title="HTML 安全沙盒" description="默认禁用脚本、自动跳转和自动下载" value="启用" />
         <SettingRow icon={<Archive size={19} />} title="本地文件库" description="保存到 App 内的文件仅保存在本机" value="本地" />
+        {isDesktop && <SettingRow icon={<FileCode2 size={19} />} title="HTML 打开方式" description="注册或撤销当前用户的 LightPage HTML 打开方式" value={htmlOpenWith ? '已注册' : '未注册'} onClick={() => {
+          const enabled = !htmlOpenWith
+          void desktopPlatform.setHtmlOpenWith(enabled).then(() => {
+            setHtmlOpenWith(enabled)
+            onSetSettings({ ...settings, desktopHtmlOpenWith: enabled })
+          })
+        }} />}
+        {isDesktop && <SettingRow icon={<BookOpen size={19} />} title="Windows 最近文档" description="将成功打开的本地文件加入系统最近文档" value={settings.desktopRecentDocuments ? '开启' : '关闭'} onClick={() => onSetSettings({ ...settings, desktopRecentDocuments: !settings.desktopRecentDocuments })} />}
         <SettingRow icon={<BookOpen size={19} />} title="使用帮助" description="文件打开、安全权限与导出说明" value="查看" onClick={() => setInfoSheet('help')} />
         <SettingRow icon={<ShieldCheck size={19} />} title="隐私说明" description="文档默认仅在本机处理，不自动上传" value="查看" onClick={() => setInfoSheet('privacy')} />
         <SettingRow icon={<FileCode2 size={19} />} title="性能诊断" description="仅保存在本机的最近耗时记录" value={`${performanceMetrics.length} 条`} onClick={() => setInfoSheet('performance')} />
-        <SettingRow icon={<FileCode2 size={19} />} title="版本" description="稳定性与体验优化版本" value="1.3.0" />
+        <SettingRow icon={<FileCode2 size={19} />} title="版本" description="Windows 单文件阅读与目录快捷访问版本" value="1.5.0" />
       </section>
       {infoSheet === 'help' && <InfoSheet title="使用帮助" onClose={() => setInfoSheet(null)}><p>可从首页、文件管理器或其他 App 打开 Markdown、HTML、ZIP 与 RAR；10 MB 以上文件默认进入源码模式。</p><p>HTML 默认禁用脚本、表单、弹窗和远程资源。同目录图片与 CSS 可在当前文件的“HTML 权限”中授权。</p><p>文件菜单支持真实 PDF、原始文件，以及当前区域、全文或分页图片导出。</p></InfoSheet>}
       {infoSheet === 'privacy' && <InfoSheet title="隐私说明" onClose={() => setInfoSheet(null)}><p>文档正文、原始字节、阅读位置与搜索内容默认仅保存在本机，不会自动上传。</p><p>远程 HTML 资源仅在你明确允许时加载；外部链接、系统分享和目录授权均由你主动触发。</p><p>删除记录会清理正文与对应资源缓存；本地性能日志不包含文档正文。</p></InfoSheet>}

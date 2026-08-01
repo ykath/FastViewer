@@ -15,6 +15,8 @@ export type ReaderSettings = {
   volumePageKeys: boolean
   readerToolbarY: number | null
   cacheLimitMb: 128 | 256 | 512
+  desktopRecentDocuments: boolean
+  desktopHtmlOpenWith: boolean
 }
 
 export const DEFAULT_READER_SETTINGS: ReaderSettings = {
@@ -30,6 +32,8 @@ export const DEFAULT_READER_SETTINGS: ReaderSettings = {
   volumePageKeys: false,
   readerToolbarY: null,
   cacheLimitMb: 256,
+  desktopRecentDocuments: true,
+  desktopHtmlOpenWith: false,
 }
 
 export function nextThemePreference(current: ThemePreference): ThemePreference {

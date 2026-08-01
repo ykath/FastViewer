@@ -9,6 +9,7 @@
     "dialog:allow-save",
     "fs:allow-read-file",
     "fs:allow-write-file",
+    "opener:allow-reveal-item-in-dir",
     {
       "identifier": "opener:allow-open-url",
       "allow": [

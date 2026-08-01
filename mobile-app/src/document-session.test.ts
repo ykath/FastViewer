@@ -13,4 +13,16 @@ describe('多文档会话管理器', () => {
     manager.close(first.sessionId)
     expect(manager.active()?.documentId).toBe('doc-b')
   })
+
+  it('保存、恢复并重新打开最近关闭的会话', () => {
+    const manager = new DocumentSessionManager()
+    const first = manager.create('doc-a', 'r1')
+    manager.update(first.sessionId, { status: 'ready', searchQuery: '关键字' })
+    const snapshot = manager.snapshot()
+    const restored = new DocumentSessionManager()
+    restored.restore(snapshot)
+    expect(restored.active()).toMatchObject({ documentId: 'doc-a', dormant: true, searchQuery: '关键字' })
+    restored.close(first.sessionId)
+    expect(restored.reopenLast()?.documentId).toBe('doc-a')
+  })
 })

@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { describe, expect, it, vi } from 'vitest'
-import { createDesktopPlatform, extractLocalMarkdownImageSources } from './desktop-platform'
+import { createDesktopPlatform, desktopDocumentId, extractLocalMarkdownImageSources } from './desktop-platform'
 import type { DesktopOpenRequest, DesktopPlatformDependencies } from './desktop-platform'
 
 function createDependencies(overrides: Partial<DesktopPlatformDependencies> = {}): DesktopPlatformDependencies {
@@ -22,6 +22,7 @@ function createDependencies(overrides: Partial<DesktopPlatformDependencies> = {}
     writeFile: vi.fn(async () => undefined),
     joinPath: vi.fn(async (...parts: string[]) => parts.join('/')),
     openUrl: vi.fn(async () => undefined),
+    revealItemInDir: vi.fn(async () => undefined),
     ...overrides,
   }
 }
@@ -104,6 +105,13 @@ describe('desktop platform adapter', () => {
     expect(openUrlMock).toHaveBeenCalledTimes(1)
   })
 
+  it('reveals a local document through the system file manager', async () => {
+    const revealItemInDir = vi.fn(async () => undefined)
+    const platform = createDesktopPlatform(createDependencies({ revealItemInDir }))
+    await expect(platform.revealInFileManager('\\\\?\\C:\\Docs\\notes.md')).resolves.toBe(true)
+    expect(revealItemInDir).toHaveBeenCalledWith('\\\\?\\C:\\Docs\\notes.md')
+  })
+
   it('extracts only local Markdown image paths', () => {
     expect(extractLocalMarkdownImageSources([
       '![首页](首页.jpg)',
@@ -148,5 +156,10 @@ describe('desktop platform adapter', () => {
     expect(resources['首页.jpg']).toMatch(/^data:image\/jpeg;base64,/)
     expect(resources['windows/windows-首页.png']).toMatch(/^data:image\/png;base64,/)
     expect(readFile).toHaveBeenCalledTimes(2)
+  })
+
+  it('uses a stable case-insensitive identity for Windows paths', () => {
+    expect(desktopDocumentId('C:\\Docs\\Guide.md')).toBe(desktopDocumentId('c:/docs/guide.md'))
+    expect(desktopDocumentId('C:\\Docs\\Other.md')).not.toBe(desktopDocumentId('C:\\Docs\\Guide.md'))
   })
 })

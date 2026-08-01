@@ -16,11 +16,51 @@ let renderQueue: Promise<void> = Promise.resolve()
 
 export default function MermaidDiagram({ source, themeMode }: MermaidDiagramProps) {
   const reactId = useId()
+  const figureRef = useRef<HTMLElement>(null)
   const renderHostRef = useRef<HTMLDivElement>(null)
   const [state, setState] = useState<DiagramState>({ status: 'loading' })
+  const [eligible, setEligible] = useState(false)
   const diagramId = `mermaid-${reactId.replace(/[^a-zA-Z0-9_-]/g, '')}`
 
   useEffect(() => {
+    const figure = figureRef.current
+    if (!figure || typeof IntersectionObserver === 'undefined') {
+      setEligible(true)
+      return undefined
+    }
+    const markEligible = () => {
+      const bounds = figure.getBoundingClientRect()
+      const reader = figure.closest<HTMLElement>('.page-reader')
+      const viewport = reader?.getBoundingClientRect() ?? { top: 0, bottom: window.innerHeight }
+      if (bounds.bottom >= viewport.top - 800 && bounds.top <= viewport.bottom + 800) setEligible(true)
+    }
+    const reader = figure.closest<HTMLElement>('.page-reader')
+    const observer = new IntersectionObserver(([entry]) => {
+      if (entry.isIntersecting) {
+        setEligible(true)
+        observer.disconnect()
+      }
+    }, { root: reader ?? null, rootMargin: '800px 0px' })
+    observer.observe(figure)
+    reader?.addEventListener('scroll', markEligible, { passive: true })
+    window.addEventListener('scroll', markEligible, { passive: true })
+    window.addEventListener('resize', markEligible)
+    const frame = window.requestAnimationFrame(markEligible)
+    // WebView2 may skip intersection callbacks for a subtree attached during the
+    // same layout pass. Never leave a valid diagram as a permanent placeholder.
+    const fallback = window.setTimeout(() => setEligible(true), 1_000)
+    return () => {
+      window.cancelAnimationFrame(frame)
+      window.clearTimeout(fallback)
+      observer.disconnect()
+      reader?.removeEventListener('scroll', markEligible)
+      window.removeEventListener('scroll', markEligible)
+      window.removeEventListener('resize', markEligible)
+    }
+  }, [])
+
+  useEffect(() => {
+    if (!eligible) return undefined
     let cancelled = false
     const renderHost = renderHostRef.current
     setState({ status: 'loading' })
@@ -48,12 +88,13 @@ export default function MermaidDiagram({ source, themeMode }: MermaidDiagramProp
     return () => {
       cancelled = true
     }
-  }, [diagramId, source, themeMode])
+  }, [diagramId, eligible, source, themeMode])
 
   return (
-    <figure className="mermaid-diagram" data-search-exclude="true">
+    <figure ref={figureRef} className="mermaid-diagram" data-search-exclude="true">
       <div ref={renderHostRef} className="mermaid-render-host" aria-hidden="true" />
-      {state.status === 'loading' && (
+      {!eligible && <div className="mermaid-status" role="status">流程图将在接近视口时绘制</div>}
+      {eligible && state.status === 'loading' && (
         <div className="mermaid-status" role="status">正在绘制流程图...</div>
       )}
       {state.status === 'ready' && (

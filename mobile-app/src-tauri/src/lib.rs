@@ -1,13 +1,22 @@
 use serde::Serialize;
 use std::{
     collections::{HashMap, HashSet, VecDeque},
-    env,
-    fs,
+    env, fs,
     path::{Path, PathBuf},
     sync::Mutex,
 };
 use tauri::{Emitter, Manager};
 use tauri_plugin_fs::FsExt;
+
+mod system_integration;
+mod workspace;
+
+use system_integration::{add_recent_document, get_html_open_with, set_html_open_with};
+use workspace::{
+    cancel_workspace_index, list_workspace_children, prepare_workspace_open, register_workspace,
+    remove_workspace, restore_workspaces, search_workspace, start_workspace_index,
+    unwatch_document, watch_document, DesktopWorkspaceState,
+};
 
 const SUPPORTED_EXTENSIONS: &[&str] = &["md", "markdown", "mdown", "html", "htm", "xhtml"];
 const SUPPORTED_IMAGE_EXTENSIONS: &[&str] = &["png", "jpg", "jpeg", "gif", "webp"];
@@ -24,19 +33,47 @@ pub struct DesktopOpenRequest {
     source: String,
 }
 
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DesktopDropClassification {
+    files: Vec<DesktopOpenRequest>,
+    directories: Vec<String>,
+    rejected: usize,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DesktopDirectoryDocument {
+    path: String,
+    file_name: String,
+    size: u64,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DesktopDirectoryListing {
+    path: String,
+    name: String,
+    files: Vec<DesktopDirectoryDocument>,
+}
+
 #[derive(Default)]
 struct PendingOpenRequests(Mutex<VecDeque<DesktopOpenRequest>>);
 
 fn validate_source(source: &str) -> Result<&str, String> {
     match source {
-        "launch" | "association" | "picker" => Ok(source),
+        "launch" | "association" | "picker" | "workspace" | "drop" => Ok(source),
         _ => Err("不支持的文件来源".to_string()),
     }
 }
 
-fn validate_open_path(path: impl AsRef<Path>, source: &str) -> Result<(PathBuf, DesktopOpenRequest), String> {
+pub(crate) fn validate_open_path(
+    path: impl AsRef<Path>,
+    source: &str,
+) -> Result<(PathBuf, DesktopOpenRequest), String> {
     validate_source(source)?;
-    let canonical = fs::canonicalize(path.as_ref()).map_err(|_| "文件不存在或无法访问".to_string())?;
+    let canonical =
+        fs::canonicalize(path.as_ref()).map_err(|_| "文件不存在或无法访问".to_string())?;
     let metadata = fs::metadata(&canonical).map_err(|_| "无法读取文件信息".to_string())?;
     if !metadata.is_file() {
         return Err("所选路径不是普通文件".to_string());
@@ -57,12 +94,15 @@ fn validate_open_path(path: impl AsRef<Path>, source: &str) -> Result<(PathBuf, 
         .ok_or_else(|| "文件名无法识别".to_string())?
         .to_string();
     let path_string = canonical.to_string_lossy().into_owned();
-    Ok((canonical, DesktopOpenRequest {
-        path: path_string,
-        file_name,
-        size: metadata.len(),
-        source: source.to_string(),
-    }))
+    Ok((
+        canonical,
+        DesktopOpenRequest {
+            path: path_string,
+            file_name,
+            size: metadata.len(),
+            source: source.to_string(),
+        },
+    ))
 }
 
 fn requests_from_args<I, S>(args: I, source: &str) -> Vec<(PathBuf, DesktopOpenRequest)>
@@ -77,7 +117,7 @@ where
         .collect()
 }
 
-fn allow_request(app: &tauri::AppHandle, path: &Path) -> Result<(), String> {
+pub(crate) fn allow_request(app: &tauri::AppHandle, path: &Path) -> Result<(), String> {
     app.fs_scope()
         .allow_file(path)
         .map_err(|error| format!("无法授权文件访问：{error}"))
@@ -162,8 +202,102 @@ fn resolve_relative_resources(
 fn take_pending_open_requests(
     state: tauri::State<'_, PendingOpenRequests>,
 ) -> Result<Vec<DesktopOpenRequest>, String> {
-    let mut queue = state.0.lock().map_err(|_| "打开文件队列不可用".to_string())?;
+    let mut queue = state
+        .0
+        .lock()
+        .map_err(|_| "打开文件队列不可用".to_string())?;
     Ok(queue.drain(..).collect())
+}
+
+#[tauri::command]
+fn classify_drop_paths(
+    app: tauri::AppHandle,
+    paths: Vec<String>,
+) -> Result<DesktopDropClassification, String> {
+    let mut seen = HashSet::new();
+    let mut files = Vec::new();
+    let mut directories = Vec::new();
+    let mut rejected = 0usize;
+    for path in paths.into_iter().take(100) {
+        let Ok(canonical) = fs::canonicalize(path) else {
+            rejected += 1;
+            continue;
+        };
+        if !seen.insert(canonical.clone()) {
+            continue;
+        }
+        if canonical.is_dir() {
+            directories.push(canonical.to_string_lossy().into_owned());
+            continue;
+        }
+        match validate_open_path(&canonical, "drop") {
+            Ok((approved, request)) if allow_request(&app, &approved).is_ok() => {
+                files.push(request)
+            }
+            _ => rejected += 1,
+        }
+    }
+    Ok(DesktopDropClassification {
+        files,
+        directories,
+        rejected,
+    })
+}
+
+fn list_directory_documents_impl(
+    path: impl AsRef<Path>,
+) -> Result<DesktopDirectoryListing, String> {
+    let canonical =
+        fs::canonicalize(path.as_ref()).map_err(|_| "目录不存在或无法访问".to_string())?;
+    let directory = if canonical.is_file() {
+        canonical
+            .parent()
+            .ok_or_else(|| "无法确定文件所在目录".to_string())?
+            .to_path_buf()
+    } else if canonical.is_dir() {
+        canonical
+    } else {
+        return Err("所选路径不是目录或普通文件".to_string());
+    };
+
+    let mut files = Vec::new();
+    let entries = fs::read_dir(&directory).map_err(|_| "无法读取当前目录".to_string())?;
+    for entry in entries.flatten().take(2_000) {
+        if entry.file_type().is_ok_and(|kind| kind.is_symlink()) {
+            continue;
+        }
+        let Ok((canonical_file, request)) = validate_open_path(entry.path(), "picker") else {
+            continue;
+        };
+        if canonical_file.parent() != Some(directory.as_path()) {
+            continue;
+        }
+        files.push(DesktopDirectoryDocument {
+            path: request.path,
+            file_name: request.file_name,
+            size: request.size,
+        });
+    }
+    files.sort_by(|left, right| {
+        left.file_name
+            .to_lowercase()
+            .cmp(&right.file_name.to_lowercase())
+    });
+    let name = directory
+        .file_name()
+        .and_then(|value| value.to_str())
+        .unwrap_or("目录")
+        .to_string();
+    Ok(DesktopDirectoryListing {
+        path: directory.to_string_lossy().into_owned(),
+        name,
+        files,
+    })
+}
+
+#[tauri::command]
+fn list_directory_documents(path: String) -> Result<DesktopDirectoryListing, String> {
+    list_directory_documents_impl(path)
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -196,10 +330,14 @@ pub fn run() {
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_window_state::Builder::default().build())
         .manage(PendingOpenRequests::default())
+        .manage(DesktopWorkspaceState::default())
         .setup(|app| {
             let requests = requests_from_args(
-                env::args_os().skip(1).map(|value| value.to_string_lossy().into_owned()),
+                env::args_os()
+                    .skip(1)
+                    .map(|value| value.to_string_lossy().into_owned()),
                 "launch",
             );
             let state = app.state::<PendingOpenRequests>();
@@ -214,7 +352,22 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             prepare_open_request,
             resolve_relative_resources,
-            take_pending_open_requests
+            take_pending_open_requests,
+            classify_drop_paths,
+            list_directory_documents,
+            register_workspace,
+            restore_workspaces,
+            remove_workspace,
+            list_workspace_children,
+            prepare_workspace_open,
+            watch_document,
+            unwatch_document,
+            start_workspace_index,
+            cancel_workspace_index,
+            search_workspace,
+            set_html_open_with,
+            get_html_open_with,
+            add_recent_document
         ]);
 
     builder
@@ -228,7 +381,10 @@ mod tests {
     use std::time::{SystemTime, UNIX_EPOCH};
 
     fn temp_root() -> PathBuf {
-        let suffix = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+        let suffix = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
         let root = env::temp_dir().join(format!("lightpage-tests-{suffix}"));
         fs::create_dir_all(&root).unwrap();
         root
@@ -319,6 +475,26 @@ mod tests {
             resources["windows/Windows-首页.png"],
             fs::canonicalize(screenshot).unwrap()
         );
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn lists_only_supported_documents_in_the_current_directory() {
+        let root = temp_root();
+        fs::write(root.join("B.html"), b"<p>b</p>").unwrap();
+        fs::write(root.join("a.md"), b"# a").unwrap();
+        fs::write(root.join("ignored.txt"), b"ignored").unwrap();
+        fs::create_dir(root.join("nested")).unwrap();
+        fs::write(root.join("nested").join("nested.md"), b"# nested").unwrap();
+
+        let listing = list_directory_documents_impl(root.join("a.md")).unwrap();
+        let names = listing
+            .files
+            .iter()
+            .map(|item| item.file_name.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(names, vec!["a.md", "B.html"]);
 
         fs::remove_dir_all(root).unwrap();
     }

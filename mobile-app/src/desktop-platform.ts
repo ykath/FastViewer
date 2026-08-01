@@ -4,13 +4,36 @@ import { listen } from '@tauri-apps/api/event'
 import { join } from '@tauri-apps/api/path'
 import { open, save } from '@tauri-apps/plugin-dialog'
 import { readFile, writeFile } from '@tauri-apps/plugin-fs'
-import { openUrl } from '@tauri-apps/plugin-opener'
+import { openUrl, revealItemInDir } from '@tauri-apps/plugin-opener'
+import type {
+  DesktopFileChange,
+  WorkspaceIndexState,
+  WorkspaceRecord,
+  WorkspaceSearchHit,
+  WorkspaceTreeNode,
+} from './domain-models'
+export { desktopDocumentId } from './desktop-identity'
 
 export type DesktopOpenRequest = {
   path: string
   fileName: string
   size: number
-  source: 'launch' | 'association' | 'picker'
+  source: 'launch' | 'association' | 'picker' | 'workspace' | 'drop'
+}
+
+export type WorkspaceRegistration = Pick<WorkspaceRecord, 'id' | 'name' | 'rootPath' | 'exclusions'>
+export type DesktopDropClassification = { files: DesktopOpenRequest[]; directories: string[]; rejected: number }
+
+export type DesktopDirectoryDocument = {
+  path: string
+  fileName: string
+  size: number
+}
+
+export type DesktopDirectoryListing = {
+  path: string
+  name: string
+  files: DesktopDirectoryDocument[]
 }
 
 export type DesktopImageFile = {
@@ -33,6 +56,7 @@ export type DesktopPlatformDependencies = {
   writeFile: typeof writeFile
   joinPath: typeof join
   openUrl: typeof openUrl
+  revealItemInDir: typeof revealItemInDir
 }
 
 const defaultDependencies: DesktopPlatformDependencies = {
@@ -46,6 +70,7 @@ const defaultDependencies: DesktopPlatformDependencies = {
   writeFile,
   joinPath: join,
   openUrl,
+  revealItemInDir,
 }
 
 export function createDesktopPlatform(dependencies: DesktopPlatformDependencies = defaultDependencies) {
@@ -83,6 +108,68 @@ export function createDesktopPlatform(dependencies: DesktopPlatformDependencies 
       return prepareRequest(selected, 'picker')
     },
 
+    async prepareDocument(path: string, source: DesktopOpenRequest['source'] = 'drop') {
+      if (!isDesktop()) throw new Error('桌面文件接口不可用')
+      return prepareRequest(path, source)
+    },
+
+    async pickWorkspaceDirectory(): Promise<string | null> {
+      if (!isDesktop()) return null
+      const selected = await dependencies.openDialog({
+        multiple: false,
+        directory: true,
+        recursive: true,
+        title: '选择资料目录',
+      })
+      return selected && !Array.isArray(selected) ? selected : null
+    },
+
+    async registerWorkspace(input: WorkspaceRegistration): Promise<WorkspaceRecord> {
+      return dependencies.invoke<WorkspaceRecord>('register_workspace', { input })
+    },
+
+    async restoreWorkspaces(inputs: WorkspaceRegistration[]): Promise<WorkspaceRecord[]> {
+      if (!isDesktop() || inputs.length === 0) return []
+      return dependencies.invoke<WorkspaceRecord[]>('restore_workspaces', { inputs })
+    },
+
+    async removeWorkspace(workspaceId: string) {
+      if (!isDesktop()) return
+      await dependencies.invoke<void>('remove_workspace', { workspaceId })
+    },
+
+    async listWorkspaceChildren(workspaceId: string, relativePath = ''): Promise<WorkspaceTreeNode[]> {
+      if (!isDesktop()) return []
+      return dependencies.invoke<WorkspaceTreeNode[]>('list_workspace_children', { workspaceId, relativePath })
+    },
+
+    async openWorkspaceDocument(workspaceId: string, relativePath: string): Promise<DesktopOpenRequest> {
+      return dependencies.invoke<DesktopOpenRequest>('prepare_workspace_open', { workspaceId, relativePath })
+    },
+
+    async startWorkspaceIndex(workspaceId: string) {
+      await dependencies.invoke<void>('start_workspace_index', { workspaceId })
+    },
+
+    async cancelWorkspaceIndex(workspaceId: string) {
+      await dependencies.invoke<void>('cancel_workspace_index', { workspaceId })
+    },
+
+    async searchWorkspaces(query: string, workspaceIds: string[], limit = 50): Promise<WorkspaceSearchHit[]> {
+      if (!isDesktop()) return []
+      return dependencies.invoke<WorkspaceSearchHit[]>('search_workspace', { query, workspaceIds, limit })
+    },
+
+    listenForWorkspaceIndex(handler: (state: WorkspaceIndexState) => void): Promise<UnlistenFn> {
+      if (!isDesktop()) return Promise.resolve(() => undefined)
+      return dependencies.listen<WorkspaceIndexState>('workspace-index-progress', handler)
+    },
+
+    listenForWorkspaceChanges(handler: (workspaceId: string) => void): Promise<UnlistenFn> {
+      if (!isDesktop()) return Promise.resolve(() => undefined)
+      return dependencies.listen<string>('workspace-files-changed', handler)
+    },
+
     readDocument(request: DesktopOpenRequest) {
       return dependencies.readFile(request.path)
     },
@@ -100,6 +187,50 @@ export function createDesktopPlatform(dependencies: DesktopPlatformDependencies 
         return [normalizeResourceKey(source), bytesToImageDataUrl(bytes, path)] as const
       }))
       return Object.fromEntries(resources)
+    },
+
+    async resolveMarkdownResourcePaths(documentPath: string, content: string): Promise<string[]> {
+      if (!isDesktop()) return []
+      const sources = extractLocalMarkdownImageSources(content).slice(0, MAX_RELATIVE_IMAGES)
+      if (sources.length === 0) return []
+      const resolved = await dependencies.invoke<RelativeResourcePaths>('resolve_relative_resources', {
+        documentPath,
+        relativePaths: sources,
+      })
+      return Object.values(resolved)
+    },
+
+    async watchDocument(documentId: string, documentPath: string, resourcePaths: string[] = []) {
+      if (!isDesktop()) return
+      await dependencies.invoke<void>('watch_document', { documentId, documentPath, resourcePaths })
+    },
+
+    async unwatchDocument(documentId: string) {
+      if (!isDesktop()) return
+      await dependencies.invoke<void>('unwatch_document', { documentId })
+    },
+
+    listenForFileChanges(handler: (change: DesktopFileChange) => void): Promise<UnlistenFn> {
+      if (!isDesktop()) return Promise.resolve(() => undefined)
+      return dependencies.listen<DesktopFileChange>('desktop-file-changed', handler)
+    },
+
+    async listenForDrops(handler: (paths: string[]) => void): Promise<UnlistenFn> {
+      if (!isDesktop()) return () => undefined
+      const { getCurrentWebview } = await import('@tauri-apps/api/webview')
+      return getCurrentWebview().onDragDropEvent((event) => {
+        if (event.payload.type === 'drop') handler(event.payload.paths)
+      })
+    },
+
+    async classifyDropPaths(paths: string[]): Promise<DesktopDropClassification> {
+      if (!isDesktop()) return { files: [], directories: [], rejected: paths.length }
+      return dependencies.invoke<DesktopDropClassification>('classify_drop_paths', { paths })
+    },
+
+    async listDirectoryDocuments(path: string): Promise<DesktopDirectoryListing> {
+      if (!isDesktop()) return { path: '', name: '', files: [] }
+      return dependencies.invoke<DesktopDirectoryListing>('list_directory_documents', { path })
     },
 
     async takePendingOpenRequests(): Promise<DesktopOpenRequest[]> {
@@ -166,6 +297,27 @@ export function createDesktopPlatform(dependencies: DesktopPlatformDependencies 
       } else {
         window.open(url, '_blank', 'noopener,noreferrer')
       }
+    },
+
+    async revealInFileManager(path: string): Promise<boolean> {
+      if (!isDesktop() || !path) return false
+      await dependencies.revealItemInDir(path)
+      return true
+    },
+
+    async getHtmlOpenWith(): Promise<boolean> {
+      if (!isDesktop()) return false
+      return dependencies.invoke<boolean>('get_html_open_with')
+    },
+
+    async setHtmlOpenWith(enabled: boolean): Promise<boolean> {
+      if (!isDesktop()) return false
+      return dependencies.invoke<boolean>('set_html_open_with', { enabled })
+    },
+
+    async addRecentDocument(path: string): Promise<void> {
+      if (!isDesktop()) return
+      await dependencies.invoke<void>('add_recent_document', { path })
     },
   }
 }

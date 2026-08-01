@@ -35,7 +35,7 @@ export type DocumentRecord = {
 export type DocumentPayload = Pick<DocumentRecord, 'content' | 'rawBase64' | 'archiveResources'>
 
 export type DocumentMetadata = Omit<DocumentRecord, 'content' | 'rawBase64' | 'archiveResources'> & {
-  storageVersion: 2 | 3
+  storageVersion: 2 | 3 | 4
   hasRawBase64: boolean
   hasArchiveResources: boolean
 }

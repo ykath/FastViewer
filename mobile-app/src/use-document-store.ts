@@ -88,6 +88,7 @@ export function useDocumentStore(seedDocuments: DocumentRecord[]) {
     const timer = window.setTimeout(() => {
       documents.forEach((document) => {
         if (document.payloadLoaded === false) return
+        if (document.sourceUri && /^[a-zA-Z]:[\\/]/.test(document.sourceUri)) return
         const fingerprint = payloadFingerprint(document)
         if (savedPayloadRef.current.get(document.id) === fingerprint) return
         void repository.savePayload(document)

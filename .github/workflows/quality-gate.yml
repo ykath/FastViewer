@@ -33,3 +33,28 @@ jobs:
       - run: chmod +x android/gradlew
       - run: ./gradlew :app:testDebugUnitTest :app:assembleDebug :app:assembleRelease :app:lintDebug
         working-directory: mobile-app/android
+
+  windows-desktop:
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: mobile-app
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: mobile-app/package-lock.json
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+      - run: npm ci
+      - run: npm run lint
+      - run: npm run test
+      - run: npm run build
+      - run: cargo test --manifest-path src-tauri/Cargo.toml
+      - run: npm run check:bundle
+      - run: npx playwright install chromium
+      - run: npm run test:e2e
+      - run: npm run desktop:build
