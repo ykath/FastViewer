@@ -27,7 +27,8 @@ export function detectAndDecode(bytes: Uint8Array): EncodingResult {
     }
   }
 
-  if (isValidUtf8(bytes)) {
+  const sample = bytes.subarray(0, Math.min(bytes.length, 64 * 1024))
+  if (isValidUtf8Sample(sample, sample.length < bytes.length)) {
     return {
       encoding: 'utf-8',
       content: decodeWithEncoding(bytes, 'utf-8'),
@@ -38,15 +39,15 @@ export function detectAndDecode(bytes: Uint8Array): EncodingResult {
 
   // UTF-8 invalid — try GBK
   try {
-    const decoded = decodeWithEncoding(bytes, 'gbk')
-    const hasCommonChinese = /[\u4e00-\u9fff]/.test(decoded)
-    const replacementCount = (decoded.match(/\ufffd/g) || []).length
-    const ratio = replacementCount / decoded.length
+    const sampledText = decodeWithEncoding(sample, 'gbk')
+    const hasCommonChinese = /[\u4e00-\u9fff]/.test(sampledText)
+    const replacementCount = (sampledText.match(/\ufffd/g) || []).length
+    const ratio = replacementCount / sampledText.length
 
     if (hasCommonChinese && ratio < 0.05) {
       return {
         encoding: 'gbk',
-        content: decoded,
+        content: decodeWithEncoding(bytes, 'gbk'),
         confidence: hasCommonChinese && ratio < 0.01 ? 'high' : 'medium',
         hasBom: false,
       }
@@ -66,7 +67,13 @@ export function detectAndDecode(bytes: Uint8Array): EncodingResult {
 export function decodeWithEncoding(bytes: Uint8Array, encoding: EncodingLabel): string {
   const decoderLabel = encoding === 'latin1' ? 'iso-8859-1' : encoding
   const decoder = new TextDecoder(decoderLabel, { fatal: false })
-  return decoder.decode(bytes)
+  if (bytes.length <= 256 * 1024) return decoder.decode(bytes)
+  const chunks: string[] = []
+  for (let offset = 0; offset < bytes.length; offset += 256 * 1024) {
+    chunks.push(decoder.decode(bytes.subarray(offset, offset + 256 * 1024), { stream: offset + 256 * 1024 < bytes.length }))
+  }
+  chunks.push(decoder.decode())
+  return chunks.join('')
 }
 
 export function base64ToBytes(base64: string): Uint8Array {
@@ -91,9 +98,9 @@ function detectBom(bytes: Uint8Array): { encoding: EncodingLabel; bomLength: num
   return null
 }
 
-function isValidUtf8(bytes: Uint8Array): boolean {
+function isValidUtf8Sample(bytes: Uint8Array, hasMore: boolean): boolean {
   try {
-    new TextDecoder('utf-8', { fatal: true }).decode(bytes)
+    new TextDecoder('utf-8', { fatal: true }).decode(bytes, { stream: hasMore })
     return true
   } catch {
     return false

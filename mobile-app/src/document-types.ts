@@ -26,12 +26,16 @@ export type DocumentRecord = {
   allowHtmlScripts?: boolean
   allowHtmlForms?: boolean
   allowHtmlPopups?: boolean
+  packageId?: string
+  packageName?: string
+  contentRevision?: string
+  payloadLoaded?: boolean
 }
 
 export type DocumentPayload = Pick<DocumentRecord, 'content' | 'rawBase64' | 'archiveResources'>
 
 export type DocumentMetadata = Omit<DocumentRecord, 'content' | 'rawBase64' | 'archiveResources'> & {
-  storageVersion: 2
+  storageVersion: 2 | 3
   hasRawBase64: boolean
   hasArchiveResources: boolean
 }

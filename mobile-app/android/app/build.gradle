@@ -7,8 +7,8 @@ android {
         applicationId "com.fastviewer.app"
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
-        versionCode 4
-        versionName "1.1.2"
+        versionCode 6
+        versionName "1.3.0"
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
         aaptOptions {
              // Files and dirs to omit from the packaged assets dir, modified to accommodate modern web apps.
@@ -51,6 +51,7 @@ dependencies {
     implementation "androidx.coordinatorlayout:coordinatorlayout:$androidxCoordinatorLayoutVersion"
     implementation "androidx.core:core-splashscreen:$coreSplashScreenVersion"
     implementation "androidx.documentfile:documentfile:1.0.1"
+    implementation "androidx.window:window-java:1.3.0"
     implementation "com.github.junrar:junrar:7.6.0"
     implementation project(':capacitor-android')
     testImplementation "junit:junit:$junitVersion"

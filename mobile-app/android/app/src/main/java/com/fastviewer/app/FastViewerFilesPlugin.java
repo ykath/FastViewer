@@ -4,6 +4,7 @@ import android.app.Activity;
 import android.content.ClipData;
 import android.content.ContentResolver;
 import android.content.Intent;
+import android.content.SharedPreferences;
 import android.database.Cursor;
 import android.graphics.Canvas;
 import android.graphics.Paint;
@@ -12,9 +13,17 @@ import android.graphics.pdf.PdfDocument;
 import android.net.Uri;
 import android.provider.OpenableColumns;
 import android.util.Base64;
+import android.view.KeyEvent;
 
 import androidx.activity.result.ActivityResult;
+import androidx.core.content.ContextCompat;
+import androidx.core.util.Consumer;
 import androidx.documentfile.provider.DocumentFile;
+import androidx.window.java.layout.WindowInfoTrackerCallbackAdapter;
+import androidx.window.layout.DisplayFeature;
+import androidx.window.layout.FoldingFeature;
+import androidx.window.layout.WindowInfoTracker;
+import androidx.window.layout.WindowLayoutInfo;
 
 import com.github.junrar.Archive;
 import com.github.junrar.exception.RarException;
@@ -27,20 +36,26 @@ import com.getcapacitor.PluginMethod;
 import com.getcapacitor.annotation.CapacitorPlugin;
 import com.getcapacitor.annotation.ActivityCallback;
 
+import org.json.JSONArray;
+import org.json.JSONObject;
+
 import java.io.File;
 import java.io.FileOutputStream;
 import java.io.FileNotFoundException;
+import java.io.FileInputStream;
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.io.RandomAccessFile;
 import java.nio.charset.Charset;
 import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Set;
+import java.util.UUID;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.zip.ZipEntry;
@@ -69,28 +84,64 @@ public class FastViewerFilesPlugin extends Plugin {
     private static final long MAX_OPEN_FILE_SIZE = 100L * 1024L * 1024L;
     private static final int MAX_RESOURCE_FILES = 500;
     private static final long MAX_RESOURCE_TOTAL_SIZE = 100L * 1024L * 1024L;
+    private static final int MAX_OPEN_QUEUE_ENTRIES = 20;
+    private static final long MAX_OPEN_QUEUE_SIZE = 300L * 1024L * 1024L;
+    private static final long MAX_SHARE_CACHE_SIZE = 100L * 1024L * 1024L;
+    private static final long LOW_STORAGE_THRESHOLD = 500L * 1024L * 1024L;
+    private static final String OPEN_QUEUE_PREFERENCES = "lightpage-open-queue";
+    private static final String OPEN_QUEUE_KEY = "requests";
+    private static final String REQUEST_ID_EXTRA = "com.fastviewer.app.OPEN_REQUEST_ID";
 
-    private static Intent latestIntent;
+    private static Intent initialIntent;
     private static FastViewerFilesPlugin activePlugin;
+    private static boolean volumePageEnabled;
+    private static volatile boolean selectionActionsEnabled;
     private final ExecutorService ioExecutor = Executors.newSingleThreadExecutor();
+    private final Object queueLock = new Object();
+    private WindowInfoTrackerCallbackAdapter windowInfoTracker;
+    private Consumer<WindowLayoutInfo> windowLayoutListener;
 
-    public static void setLatestIntent(Intent intent) {
-        latestIntent = intent;
+    public static void setInitialIntent(Intent intent) {
+        initialIntent = intent;
     }
 
     public static void handleNewIntent(Intent intent) {
-        latestIntent = intent;
         if (activePlugin != null) {
-            activePlugin.notifyFileOpen(intent);
+            activePlugin.enqueueIntent(intent);
+        } else {
+            initialIntent = intent;
         }
+    }
+
+    public static boolean handleVolumeKey(int keyCode, int action) {
+        if (!volumePageEnabled || activePlugin == null || action != KeyEvent.ACTION_DOWN) return false;
+        if (keyCode != KeyEvent.KEYCODE_VOLUME_UP && keyCode != KeyEvent.KEYCODE_VOLUME_DOWN) return false;
+        JSObject event = new JSObject();
+        event.put("direction", keyCode == KeyEvent.KEYCODE_VOLUME_UP ? "previous" : "next");
+        activePlugin.notifyListeners("volumePage", event, true);
+        return true;
+    }
+
+    public static boolean areSelectionActionsEnabled() {
+        return selectionActionsEnabled;
     }
 
     @Override
     public void load() {
         activePlugin = this;
+        windowInfoTracker = new WindowInfoTrackerCallbackAdapter(WindowInfoTracker.getOrCreate(getContext()));
+        windowLayoutListener = this::emitWindowLayout;
+        windowInfoTracker.addWindowLayoutInfoListener(
+            getActivity(),
+            ContextCompat.getMainExecutor(getContext()),
+            windowLayoutListener
+        );
         ioExecutor.execute(() -> {
             cleanupOldShareFiles(new File(getContext().getCacheDir(), "share"));
             cleanupTransientOpenFiles();
+            Intent intent = initialIntent;
+            initialIntent = null;
+            if (intent != null) enqueueIntentInBackground(intent);
         });
     }
 
@@ -99,13 +150,85 @@ public class FastViewerFilesPlugin extends Plugin {
         if (activePlugin == this) {
             activePlugin = null;
         }
+        if (windowInfoTracker != null && windowLayoutListener != null) {
+            windowInfoTracker.removeWindowLayoutInfoListener(windowLayoutListener);
+        }
         ioExecutor.shutdownNow();
+        selectionActionsEnabled = false;
         super.handleOnDestroy();
     }
 
     @PluginMethod
     public void getLaunchFile(PluginCall call) {
         ioExecutor.execute(() -> getLaunchFileInBackground(call));
+    }
+
+    @PluginMethod
+    public void getPendingOpenRequests(PluginCall call) {
+        ioExecutor.execute(() -> {
+            JSObject result = new JSObject();
+            result.put("requests", readOpenQueue());
+            call.resolve(result);
+        });
+    }
+
+    @PluginMethod
+    public void setVolumePageEnabled(PluginCall call) {
+        volumePageEnabled = Boolean.TRUE.equals(call.getBoolean("enabled", false));
+        call.resolve();
+    }
+
+    @PluginMethod
+    public void setSelectionActionsEnabled(PluginCall call) {
+        selectionActionsEnabled = Boolean.TRUE.equals(call.getBoolean("enabled", false));
+        call.resolve();
+    }
+
+    @PluginMethod
+    public void prepareShareCache(PluginCall call) {
+        ioExecutor.execute(() -> {
+            File directory = new File(getContext().getCacheDir(), "share");
+            cleanupOldShareFiles(directory);
+            long expectedBytes = Math.max(0L, call.getLong("expectedBytes", 0L));
+            trimDirectoryToSize(directory, Math.max(0L, MAX_SHARE_CACHE_SIZE - expectedBytes));
+            JSObject result = new JSObject();
+            result.put("availableBytes", Math.max(0L, MAX_SHARE_CACHE_SIZE - directorySize(directory)));
+            call.resolve(result);
+        });
+    }
+
+    private void emitWindowLayout(WindowLayoutInfo layoutInfo) {
+        JSArray features = new JSArray();
+        for (DisplayFeature feature : layoutInfo.getDisplayFeatures()) {
+            if (!(feature instanceof FoldingFeature)) continue;
+            FoldingFeature fold = (FoldingFeature) feature;
+            JSObject item = new JSObject();
+            item.put("left", fold.getBounds().left);
+            item.put("top", fold.getBounds().top);
+            item.put("right", fold.getBounds().right);
+            item.put("bottom", fold.getBounds().bottom);
+            item.put("separating", fold.isSeparating());
+            item.put("orientation", fold.getOrientation() == FoldingFeature.Orientation.VERTICAL ? "vertical" : "horizontal");
+            features.put(item);
+        }
+        JSObject event = new JSObject();
+        event.put("features", features);
+        notifyListeners("layoutChanged", event, true);
+    }
+
+    @PluginMethod
+    public void resolveOpenRequest(PluginCall call) {
+        ioExecutor.execute(() -> resolveOpenRequestInBackground(call));
+    }
+
+    @PluginMethod
+    public void acknowledgeOpenRequest(PluginCall call) {
+        ioExecutor.execute(() -> finishOpenRequest(call, true));
+    }
+
+    @PluginMethod
+    public void discardOpenRequest(PluginCall call) {
+        ioExecutor.execute(() -> finishOpenRequest(call, true));
     }
 
     @PluginMethod
@@ -161,7 +284,7 @@ public class FastViewerFilesPlugin extends Plugin {
     }
 
     private void getLaunchFileInBackground(PluginCall call) {
-        Intent intent = latestIntent != null ? latestIntent : getActivity().getIntent();
+        Intent intent = initialIntent != null ? initialIntent : getActivity().getIntent();
         Uri uri = resolveIntentUri(intent);
 
         if (uri == null) {
@@ -208,6 +331,214 @@ public class FastViewerFilesPlugin extends Plugin {
             result.put("errorCode", "UNKNOWN");
             call.resolve(result);
         }
+    }
+
+    private void enqueueIntent(Intent intent) {
+        ioExecutor.execute(() -> enqueueIntentInBackground(intent));
+    }
+
+    private void enqueueIntentInBackground(Intent intent) {
+        List<Uri> uris = resolveIntentUris(intent);
+        if (uris.isEmpty()) return;
+        String sharedRequestId = intent.getStringExtra(REQUEST_ID_EXTRA);
+        if (sharedRequestId == null || sharedRequestId.isEmpty()) {
+            sharedRequestId = UUID.randomUUID().toString();
+            intent.putExtra(REQUEST_ID_EXTRA, sharedRequestId);
+        }
+        for (int index = 0; index < uris.size(); index++) {
+            enqueueUri(uris.get(index), uris.size() == 1 ? sharedRequestId : sharedRequestId + "-" + index);
+        }
+        JSObject signal = new JSObject();
+        signal.put("count", readOpenQueue().length());
+        notifyListeners("openRequestAvailable", signal, true);
+    }
+
+    private void enqueueUri(Uri uri, String requestId) {
+        synchronized (queueLock) {
+            JSONArray queue = readOpenQueue();
+            for (int index = 0; index < queue.length(); index++) {
+                if (requestId.equals(queue.optJSONObject(index).optString("requestId"))) return;
+            }
+            ContentResolver resolver = getContext().getContentResolver();
+            String fileName = resolveFileName(resolver, uri);
+            long declaredSize = Math.max(0L, resolveFileSize(resolver, uri));
+            long queuedSize = openQueueSize(queue);
+            if (queue.length() >= MAX_OPEN_QUEUE_ENTRIES) return;
+            if (declaredSize > MAX_OPEN_FILE_SIZE || queuedSize + declaredSize > MAX_OPEN_QUEUE_SIZE) {
+                queue.put(createQueuedError(requestId, fileName, declaredSize, "外部打开队列已满或文件超过安全上限"));
+                writeOpenQueue(queue);
+                return;
+            }
+            File target = null;
+            try {
+                File directory = new File(getContext().getFilesDir(), "open-queue");
+                if (!directory.exists() && !directory.mkdirs()) throw new FileNotFoundException("无法创建打开队列目录");
+                target = new File(directory, requestId + "-" + sanitizeName(fileName));
+                try (InputStream input = resolver.openInputStream(uri); FileOutputStream output = new FileOutputStream(target)) {
+                    if (input == null) throw new FileNotFoundException("无法读取外部文件");
+                    copyWithLimit(input, output, MAX_OPEN_FILE_SIZE);
+                }
+                if (openQueueSize(queue) + target.length() > MAX_OPEN_QUEUE_SIZE) {
+                    target.delete();
+                    queue.put(createQueuedError(requestId, fileName, target.length(), "外部打开队列空间不足"));
+                } else {
+                    JSONObject item = new JSONObject();
+                    item.put("requestId", requestId);
+                    item.put("receivedAt", System.currentTimeMillis());
+                    item.put("fileName", fileName);
+                    item.put("mimeType", resolver.getType(uri));
+                    item.put("size", target.length());
+                    item.put("cachedPath", target.getAbsolutePath());
+                    item.put("sourceUri", uri.toString());
+                    item.put("isArchive", isArchive(fileName, resolver.getType(uri)));
+                    queue.put(item);
+                }
+            } catch (Exception exception) {
+                if (target != null) target.delete();
+                queue.put(createQueuedError(requestId, fileName, declaredSize, "无法暂存外部文件：" + exception.getMessage()));
+            }
+            writeOpenQueue(queue);
+        }
+    }
+
+    private JSONObject createQueuedError(String requestId, String fileName, long size, String message) {
+        JSONObject item = new JSONObject();
+        try {
+            item.put("requestId", requestId);
+            item.put("receivedAt", System.currentTimeMillis());
+            item.put("fileName", fileName);
+            item.put("size", size);
+            item.put("cachedPath", "");
+            item.put("isArchive", false);
+            item.put("error", message);
+        } catch (Exception ignored) {
+            // JSONObject accepts the primitive values above.
+        }
+        return item;
+    }
+
+    private JSONArray readOpenQueue() {
+        synchronized (queueLock) {
+            SharedPreferences preferences = getContext().getSharedPreferences(OPEN_QUEUE_PREFERENCES, 0);
+            try {
+                return new JSONArray(preferences.getString(OPEN_QUEUE_KEY, "[]"));
+            } catch (Exception exception) {
+                return new JSONArray();
+            }
+        }
+    }
+
+    private void writeOpenQueue(JSONArray queue) {
+        getContext().getSharedPreferences(OPEN_QUEUE_PREFERENCES, 0)
+            .edit()
+            .putString(OPEN_QUEUE_KEY, queue.toString())
+            .apply();
+    }
+
+    private long openQueueSize(JSONArray queue) {
+        long total = 0L;
+        for (int index = 0; index < queue.length(); index++) {
+            JSONObject item = queue.optJSONObject(index);
+            if (item != null && item.optString("error", "").isEmpty()) total += Math.max(0L, item.optLong("size", 0L));
+        }
+        return total;
+    }
+
+    private void resolveOpenRequestInBackground(PluginCall call) {
+        String requestId = call.getString("requestId");
+        JSONObject queued = findOpenRequest(requestId);
+        if (queued == null) {
+            call.reject("外部打开请求不存在或已处理");
+            return;
+        }
+        if (!queued.optString("error", "").isEmpty()) {
+            try {
+                JSObject result = JSObject.fromJSONObject(queued);
+                result.put("hasFile", false);
+                result.put("errorCode", "UNKNOWN");
+                call.resolve(result);
+            } catch (Exception exception) {
+                call.reject("无法读取外部打开错误：" + exception.getMessage(), exception);
+            }
+            return;
+        }
+        try {
+            File stored = resolveAllowedFile(queued.optString("cachedPath"));
+            String fileName = queued.optString("fileName");
+            String mimeType = queued.optString("mimeType", "");
+            if (queued.optBoolean("isArchive", false)) {
+                File temporary = new File(getContext().getCacheDir(), "queued-" + requestId + "-" + sanitizeName(fileName));
+                try {
+                    try (InputStream input = new FileInputStream(stored); OutputStream output = new FileOutputStream(temporary)) {
+                        copy(input, output);
+                    }
+                    JSObject result = createArchiveResult(temporary, fileName, mimeType, stored.length(), queued.optString("sourceUri", null));
+                    result.put("requestId", requestId);
+                    call.resolve(result);
+                } finally {
+                    temporary.delete();
+                }
+            } else {
+                JSObject result = createResult(Uri.parse(queued.optString("sourceUri", "")), fileName, mimeType, stored.length(), stored.getAbsolutePath());
+                result.put("requestId", requestId);
+                call.resolve(result);
+            }
+        } catch (Exception exception) {
+            call.reject("无法处理外部打开请求：" + exception.getMessage(), exception);
+        }
+    }
+
+    private JSONObject findOpenRequest(String requestId) {
+        if (requestId == null) return null;
+        JSONArray queue = readOpenQueue();
+        for (int index = 0; index < queue.length(); index++) {
+            JSONObject item = queue.optJSONObject(index);
+            if (item != null && requestId.equals(item.optString("requestId"))) return item;
+        }
+        return null;
+    }
+
+    private void finishOpenRequest(PluginCall call, boolean deleteFile) {
+        String requestId = call.getString("requestId");
+        synchronized (queueLock) {
+            JSONArray queue = readOpenQueue();
+            JSONArray remaining = new JSONArray();
+            boolean removed = false;
+            for (int index = 0; index < queue.length(); index++) {
+                JSONObject item = queue.optJSONObject(index);
+                if (item != null && requestId != null && requestId.equals(item.optString("requestId"))) {
+                    removed = true;
+                    if (deleteFile) {
+                        String path = item.optString("cachedPath", "");
+                        if (!path.isEmpty()) new File(path).delete();
+                    }
+                } else if (item != null) {
+                    remaining.put(item);
+                }
+            }
+            writeOpenQueue(remaining);
+            JSObject result = new JSObject();
+            result.put("removed", removed);
+            call.resolve(result);
+        }
+    }
+
+    private List<Uri> resolveIntentUris(Intent intent) {
+        List<Uri> uris = new ArrayList<>();
+        if (intent == null) return uris;
+        if (intent.getData() != null) uris.add(intent.getData());
+        Object stream = intent.getParcelableExtra(Intent.EXTRA_STREAM);
+        if (stream instanceof Uri && !uris.contains(stream)) uris.add((Uri) stream);
+        ArrayList<Uri> streams = intent.getParcelableArrayListExtra(Intent.EXTRA_STREAM);
+        if (streams != null) for (Uri uri : streams) if (uri != null && !uris.contains(uri)) uris.add(uri);
+        ClipData clipData = intent.getClipData();
+        if (clipData != null) {
+            for (int index = 0; index < clipData.getItemCount(); index++) {
+                Uri uri = clipData.getItemAt(index).getUri();
+                if (uri != null && !uris.contains(uri)) uris.add(uri);
+            }
+        }
+        return uris;
     }
 
     @PluginMethod
@@ -415,6 +746,24 @@ public class FastViewerFilesPlugin extends Plugin {
         for (File file : files) {
             if (file.isFile() && file.lastModified() < cutoff) file.delete();
         }
+        trimDirectoryToSize(shareDirectory, MAX_SHARE_CACHE_SIZE);
+    }
+
+    private void trimDirectoryToSize(File directory, long targetBytes) {
+        File[] files = directory.listFiles(File::isFile);
+        if (files == null) return;
+        List<File> ordered = new ArrayList<>();
+        long total = 0L;
+        for (File file : files) {
+            ordered.add(file);
+            total += Math.max(0L, file.length());
+        }
+        ordered.sort(Comparator.comparingLong(File::lastModified));
+        for (File file : ordered) {
+            if (total <= targetBytes) break;
+            long bytes = Math.max(0L, file.length());
+            if (file.delete()) total = Math.max(0L, total - bytes);
+        }
     }
 
     private void cleanupTransientOpenFiles() {
@@ -422,7 +771,7 @@ public class FastViewerFilesPlugin extends Plugin {
         if (files == null) return;
         for (File file : files) {
             String name = file.getName();
-            if (file.isFile() && (name.startsWith("open-") || name.startsWith("picked-"))) file.delete();
+            if (file.isFile() && (name.startsWith("open-") || name.startsWith("picked-") || name.startsWith("queued-"))) file.delete();
         }
     }
 
@@ -560,6 +909,7 @@ public class FastViewerFilesPlugin extends Plugin {
             try {
                 File directory = resolveArchiveDirectory(storageId);
                 deleteRecursively(directory);
+                deleteRecursively(resolvePackageDirectory(storageId));
                 JSObject result = new JSObject();
                 result.put("deleted", !directory.exists());
                 call.resolve(result);
@@ -587,11 +937,111 @@ public class FastViewerFilesPlugin extends Plugin {
                         }
                     }
                 }
+                File packagesRoot = new File(getContext().getFilesDir(), "packages");
+                File[] packageDirectories = packagesRoot.listFiles();
+                if (packageDirectories != null) {
+                    for (File directory : packageDirectories) {
+                        if (directory.isDirectory() && !validIds.contains(directory.getName())) {
+                            deleteRecursively(directory);
+                            if (!directory.exists()) deleted += 1;
+                        }
+                    }
+                }
                 JSObject result = new JSObject();
                 result.put("deleted", deleted);
                 call.resolve(result);
             } catch (Exception exception) {
                 call.reject("无法清理孤立资源目录：" + exception.getMessage(), exception);
+            }
+        });
+    }
+
+    @PluginMethod
+    public void getStorageStatus(PluginCall call) {
+        ioExecutor.execute(() -> {
+            File filesRoot = getContext().getFilesDir();
+            File cacheRoot = getContext().getCacheDir();
+            JSObject result = new JSObject();
+            result.put("durableBytes", directorySize(new File(filesRoot, "packages")));
+            result.put("regenerableBytes", regenerableArchiveSize());
+            result.put("openQueueBytes", directorySize(new File(filesRoot, "open-queue")));
+            result.put("shareBytes", directorySize(new File(cacheRoot, "share")));
+            result.put("freeBytes", filesRoot.getUsableSpace());
+            call.resolve(result);
+        });
+    }
+
+    @PluginMethod
+    public void clearRegenerableCache(PluginCall call) {
+        ioExecutor.execute(() -> {
+            long limit = Math.max(0L, call.getLong("limitMb", 256L)) * 1024L * 1024L;
+            boolean force = Boolean.TRUE.equals(call.getBoolean("force", false));
+            File archivesRoot = new File(getContext().getFilesDir(), "archives");
+            File[] directories = archivesRoot.listFiles(File::isDirectory);
+            List<File> candidates = new ArrayList<>();
+            long total = 0L;
+            if (directories != null) {
+                for (File directory : directories) {
+                    if (!hasPackageOriginal(directory.getName())) continue;
+                    candidates.add(directory);
+                    total += directorySize(directory);
+                }
+            }
+            candidates.sort(Comparator.comparingLong(File::lastModified));
+            int deleted = 0;
+            long target = force ? 0L : limit;
+            for (File directory : candidates) {
+                if (total <= target) break;
+                long bytes = directorySize(directory);
+                deleteRecursively(directory);
+                if (!directory.exists()) {
+                    total = Math.max(0L, total - bytes);
+                    deleted += 1;
+                }
+            }
+            cleanupOldShareFiles(new File(getContext().getCacheDir(), "share"));
+            JSObject result = new JSObject();
+            result.put("deleted", deleted);
+            result.put("remainingBytes", total);
+            call.resolve(result);
+        });
+    }
+
+    @PluginMethod
+    public void openArchiveEntry(PluginCall call) {
+        ioExecutor.execute(() -> {
+            try {
+                String storageId = call.getString("storageId");
+                String relativePath = call.getString("relativePath");
+                File directory = resolveArchiveDirectory(storageId);
+                File target = new File(directory, relativePath == null ? "" : relativePath).getCanonicalFile();
+                if (!isWithin(directory, target) || !target.isFile() || !isViewableFile(target.getName())) {
+                    throw new SecurityException("压缩包条目不存在或不可读取");
+                }
+                directory.setLastModified(System.currentTimeMillis());
+                JSObject result = new JSObject();
+                result.put("cachedPath", target.getAbsolutePath());
+                result.put("size", target.length());
+                call.resolve(result);
+            } catch (Exception exception) {
+                call.reject("无法打开压缩包条目：" + exception.getMessage(), exception);
+            }
+        });
+    }
+
+    @PluginMethod
+    public void getArchiveResources(PluginCall call) {
+        ioExecutor.execute(() -> {
+            try {
+                File directory = resolveArchiveDirectory(call.getString("storageId"));
+                directory.setLastModified(System.currentTimeMillis());
+                List<File> files = new ArrayList<>();
+                collectFiles(directory, files);
+                JSObject result = new JSObject();
+                result.put("resources", buildResourceMap(directory, files));
+                call.resolve(result);
+            } catch (Exception exception) {
+                call.reject("无法读取压缩包资源：" + exception.getMessage(), exception);
             }
         });
     }
@@ -621,6 +1071,14 @@ public class FastViewerFilesPlugin extends Plugin {
         return target;
     }
 
+    private File resolvePackageDirectory(String storageId) throws Exception {
+        if (storageId == null || storageId.isEmpty()) throw new IllegalArgumentException("压缩包存储标识为空");
+        File packagesRoot = new File(getContext().getFilesDir(), "packages").getCanonicalFile();
+        File target = new File(packagesRoot, storageId).getCanonicalFile();
+        if (!isWithin(packagesRoot, target)) throw new SecurityException("压缩包原文件目录越界");
+        return target;
+    }
+
     private boolean isWithin(File root, File target) {
         return ArchiveSafety.isWithin(root, target);
     }
@@ -637,16 +1095,35 @@ public class FastViewerFilesPlugin extends Plugin {
     }
 
     private JSObject createArchiveResult(File archiveFile, String archiveName, String mimeType, long archiveSize, String sourceUri) throws Exception {
-        File extractDir = createExtractDir(archiveName);
+        String sha256 = sha256(archiveFile);
+        File extractDir = createExtractDir(sha256);
+        File completeMarker = new File(extractDir, ".complete");
+        if (!completeMarker.exists() && archiveFile.length() >= 20L * 1024L * 1024L
+            && getContext().getFilesDir().getUsableSpace() < LOW_STORAGE_THRESHOLD) {
+            throw new IllegalStateException("剩余空间低于 500 MB，无法解压大型文档包");
+        }
+        File packageDirectory = resolvePackageDirectory(sha256);
+        if (!packageDirectory.exists() && !packageDirectory.mkdirs()) throw new IllegalStateException("无法创建压缩包存储目录");
+        File originalFile = new File(packageDirectory, "original." + getExtension(archiveName));
+        if (!originalFile.exists()) {
+            try (InputStream input = new FileInputStream(archiveFile); OutputStream output = new FileOutputStream(originalFile)) {
+                copy(input, output);
+            }
+        }
 
         try {
-            String extension = getExtension(archiveName);
-            if ("zip".equals(extension)) {
-                extractZip(archiveFile, extractDir);
-            } else if ("rar".equals(extension)) {
-                extractRar(archiveFile, extractDir);
-            } else {
-                throw new IllegalArgumentException("暂不支持该压缩包格式。");
+            if (!completeMarker.exists()) {
+                File[] stale = extractDir.listFiles();
+                if (stale != null) for (File item : stale) deleteRecursively(item);
+                String extension = getExtension(archiveName);
+                if ("zip".equals(extension)) {
+                    extractZip(archiveFile, extractDir);
+                } else if ("rar".equals(extension)) {
+                    extractRar(archiveFile, extractDir);
+                } else {
+                    throw new IllegalArgumentException("暂不支持该压缩包格式。");
+                }
+                if (!completeMarker.createNewFile()) throw new IllegalStateException("无法完成压缩包导入");
             }
 
             List<File> extractedFiles = new ArrayList<>();
@@ -668,7 +1145,19 @@ public class FastViewerFilesPlugin extends Plugin {
                 return createNoViewableFileResult("压缩包中没有 Markdown 或 HTML 文件，已清理临时目录。");
             }
 
-            viewableFiles.sort(Comparator.comparing(File::getName, String.CASE_INSENSITIVE_ORDER));
+            viewableFiles.sort((left, right) -> {
+                String leftPath;
+                String rightPath;
+                try {
+                    leftPath = relativePath(extractDir, left);
+                    rightPath = relativePath(extractDir, right);
+                } catch (Exception exception) {
+                    leftPath = left.getName();
+                    rightPath = right.getName();
+                }
+                int priority = archiveEntryPriority(leftPath) - archiveEntryPriority(rightPath);
+                return priority != 0 ? priority : String.CASE_INSENSITIVE_ORDER.compare(leftPath, rightPath);
+            });
 
             JSObject result = new JSObject();
             result.put("hasFile", true);
@@ -678,6 +1167,8 @@ public class FastViewerFilesPlugin extends Plugin {
             result.put("size", archiveSize);
             result.put("uri", sourceUri);
             result.put("storageId", extractDir.getName());
+            result.put("sha256", sha256);
+            result.put("originalPath", originalFile.getAbsolutePath());
             result.put("extractedDir", extractDir.getAbsolutePath());
             result.put("documents", buildArchiveDocuments(extractDir, viewableFiles, archiveName, sourceUri));
             result.put("resources", buildResourceMap(extractDir, extractedFiles));
@@ -798,13 +1289,32 @@ public class FastViewerFilesPlugin extends Plugin {
         }
     }
 
-    private File createExtractDir(String archiveName) {
+    private File createExtractDir(String storageId) {
         File archivesRoot = new File(getContext().getFilesDir(), "archives");
-        File extractDir = new File(archivesRoot, System.currentTimeMillis() + "-" + stripExtension(sanitizeName(archiveName)));
+        File extractDir = new File(archivesRoot, storageId);
         if (!extractDir.mkdirs() && !extractDir.isDirectory()) {
             throw new IllegalStateException("无法创建本地解压目录");
         }
         return extractDir;
+    }
+
+    private int archiveEntryPriority(String path) {
+        String normalized = path.replace('\\', '/').toLowerCase(Locale.ROOT);
+        if (normalized.equals("readme.md") || normalized.endsWith("/readme.md")) return 0;
+        if (normalized.matches("(?:.*/)?index\\.(?:md|html?|xhtml)")) return 1;
+        return 2;
+    }
+
+    private String sha256(File file) throws Exception {
+        MessageDigest digest = MessageDigest.getInstance("SHA-256");
+        byte[] buffer = new byte[64 * 1024];
+        try (InputStream input = new FileInputStream(file)) {
+            int read;
+            while ((read = input.read(buffer)) != -1) digest.update(buffer, 0, read);
+        }
+        StringBuilder value = new StringBuilder();
+        for (byte item : digest.digest()) value.append(String.format(Locale.ROOT, "%02x", item));
+        return value.toString();
     }
 
     private void extractZip(File archiveFile, File extractDir) throws Exception {
@@ -955,6 +1465,34 @@ public class FastViewerFilesPlugin extends Plugin {
                 files.add(child);
             }
         }
+    }
+
+    private boolean hasPackageOriginal(String storageId) {
+        try {
+            File packageDirectory = resolvePackageDirectory(storageId);
+            File[] originals = packageDirectory.listFiles((directory, name) -> name.startsWith("original."));
+            return originals != null && originals.length > 0;
+        } catch (Exception ignored) {
+            return false;
+        }
+    }
+
+    private long regenerableArchiveSize() {
+        File[] directories = new File(getContext().getFilesDir(), "archives").listFiles(File::isDirectory);
+        long total = 0L;
+        if (directories != null) {
+            for (File directory : directories) if (hasPackageOriginal(directory.getName())) total += directorySize(directory);
+        }
+        return total;
+    }
+
+    private long directorySize(File file) {
+        if (file == null || !file.exists()) return 0L;
+        if (file.isFile()) return Math.max(0L, file.length());
+        long total = 0L;
+        File[] children = file.listFiles();
+        if (children != null) for (File child : children) total += directorySize(child);
+        return total;
     }
 
     private void deleteRecursively(File file) {

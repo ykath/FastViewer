@@ -9,6 +9,12 @@ export type ReaderSettings = {
   contentWidthLevel: number
   codeSizeLevel: number
   externalResourcePolicy: ExternalResourcePolicy
+  immersiveTap: boolean
+  rightEdgeToc: boolean
+  doubleTapReset: boolean
+  volumePageKeys: boolean
+  readerToolbarY: number | null
+  cacheLimitMb: 128 | 256 | 512
 }
 
 export const DEFAULT_READER_SETTINGS: ReaderSettings = {
@@ -18,6 +24,12 @@ export const DEFAULT_READER_SETTINGS: ReaderSettings = {
   contentWidthLevel: 1,
   codeSizeLevel: 1,
   externalResourcePolicy: 'block',
+  immersiveTap: true,
+  rightEdgeToc: true,
+  doubleTapReset: true,
+  volumePageKeys: false,
+  readerToolbarY: null,
+  cacheLimitMb: 256,
 }
 
 export function nextThemePreference(current: ThemePreference): ThemePreference {

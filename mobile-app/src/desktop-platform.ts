@@ -1,4 +1,5 @@
 import { invoke, isTauri } from '@tauri-apps/api/core'
+import { Capacitor } from '@capacitor/core'
 import { listen } from '@tauri-apps/api/event'
 import { join } from '@tauri-apps/api/path'
 import { open, save } from '@tauri-apps/plugin-dialog'
@@ -57,7 +58,14 @@ export function createDesktopPlatform(dependencies: DesktopPlatformDependencies 
     isDesktop,
 
     applyRuntimeMarker() {
-      document.documentElement.dataset.runtime = isDesktop() ? 'desktop' : 'web'
+      let runtime = isDesktop() ? 'desktop' : Capacitor.isNativePlatform() ? 'native' : 'web'
+      if (import.meta.env.DEV) {
+        const previewRuntime = new URLSearchParams(window.location.search).get('runtime')
+        if (previewRuntime === 'desktop' || previewRuntime === 'native' || previewRuntime === 'web') {
+          runtime = previewRuntime
+        }
+      }
+      document.documentElement.dataset.runtime = runtime
     },
 
     async pickDocument(): Promise<DesktopOpenRequest | null> {

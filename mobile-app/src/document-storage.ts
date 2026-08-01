@@ -228,7 +228,7 @@ export async function deleteDocumentPayload(id: string) {
   }
 }
 
-async function readDocumentPayload(metadata: DocumentMetadata) {
+export async function readDocumentPayload(metadata: DocumentMetadata) {
   return Capacitor.isNativePlatform() ? nativeReadPayload(metadata) : webReadPayload(metadata.id)
 }
 
@@ -251,6 +251,12 @@ function readLegacyDocuments() {
   } catch {
     return null
   }
+}
+
+export async function loadLegacyDocumentsReadonly() {
+  const metadata = readDocumentIndex()
+  if (metadata?.length) return loadFromMetadata(metadata)
+  return readLegacyDocuments()
 }
 
 async function persistSnapshot(documents: DocumentRecord[]) {

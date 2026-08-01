@@ -1,18 +1,23 @@
 import {
   AlertCircle,
   Archive,
+  Bookmark,
   BookOpen,
   ChevronLeft,
+  ChevronDown,
+  ChevronUp,
   Copy,
   FileCode2,
   FileText,
   FolderOpen,
   Heart,
+  Highlighter,
   Home,
   ImageDown,
   ListTree,
   Loader2,
   Menu,
+  MessageSquare,
   Moon,
   Search,
   Settings,
@@ -26,6 +31,7 @@ import {
   X,
 } from 'lucide-react'
 import React, { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import QRCode from 'qrcode'
 import { Capacitor, registerPlugin } from '@capacitor/core'
 import type { PluginListenerHandle } from '@capacitor/core'
 import { App as CapacitorApp } from '@capacitor/app'
@@ -43,6 +49,17 @@ import { DEFAULT_READER_SETTINGS, nextThemePreference, themePreferenceLabel } fr
 import type { ReaderSettings, ThemeMode } from './reader-settings'
 import { desktopPlatform } from './desktop-platform'
 import type { DesktopOpenRequest } from './desktop-platform'
+import type { AnnotationAnchor, DocumentAnnotation, DocumentRepository } from './domain-models'
+import { documentSessions } from './document-session'
+import {
+  annotationsToMarkdown,
+  applyAnnotationHighlights,
+  canonicalText,
+  captureSelectionAnchor,
+  createBookmarkAnchor,
+  reanchorAnnotation,
+  sha256Text,
+} from './annotations'
 import './App.css'
 
 const MarkdownReader = lazy(() => import('./MarkdownReader'))
@@ -53,6 +70,7 @@ type HomeTab = 'recent' | 'favorite' | 'library'
 type FileSortMode = 'recent' | 'name' | 'size'
 type ReaderMode = 'rendered' | 'source'
 type ImageExportMode = 'visible' | 'full' | 'pages'
+type ShareCardTemplate = 'simple' | 'dark' | 'accent'
 
 type FileOpenErrorCode =
   | 'PERMISSION_EXPIRED'
@@ -87,12 +105,27 @@ type ExternalFileResult = {
   base64Content?: string
   cachedPath?: string
   storageId?: string
+  sha256?: string
+  originalPath?: string
   content?: string
   size?: number
   error?: string
   errorCode?: string
   documents?: ExternalArchiveDocument[]
   resources?: Record<string, string | ExternalArchiveResource>
+  requestId?: string
+}
+
+type NativeOpenRequest = {
+  requestId: string
+  receivedAt: string | number
+  fileName: string
+  mimeType?: string
+  size: number
+  cachedPath: string
+  sourceUri?: string
+  isArchive: boolean
+  error?: string
 }
 
 type ExternalArchiveDocument = {
@@ -118,8 +151,16 @@ type NativeFileChunk = {
   size: number
 }
 
+type NativeWindowLayout = {
+  features: Array<{ left: number; top: number; right: number; bottom: number; separating: boolean; orientation: 'vertical' | 'horizontal' }>
+}
+
 type FastViewerFilesPlugin = {
   getLaunchFile: () => Promise<ExternalFileResult>
+  getPendingOpenRequests: () => Promise<{ requests: NativeOpenRequest[] }>
+  resolveOpenRequest: (options: { requestId: string }) => Promise<ExternalFileResult>
+  acknowledgeOpenRequest: (options: { requestId: string }) => Promise<{ removed: boolean }>
+  discardOpenRequest: (options: { requestId: string }) => Promise<{ removed: boolean }>
   pickFile: () => Promise<ExternalFileResult>
   importArchive: (options: {
     fileName: string
@@ -131,6 +172,10 @@ type FastViewerFilesPlugin = {
   releaseStoredFile: (options: { path: string }) => Promise<{ deleted: boolean }>
   releaseArchive: (options: { storageId: string }) => Promise<{ deleted: boolean }>
   cleanupArchives: (options: { storageIds: string[] }) => Promise<{ deleted: number }>
+  getStorageStatus: () => Promise<{ durableBytes: number; regenerableBytes: number; openQueueBytes: number; shareBytes: number; freeBytes: number }>
+  clearRegenerableCache: (options: { limitMb: number; force?: boolean }) => Promise<{ deleted: number; remainingBytes: number }>
+  openArchiveEntry: (options: { storageId: string; relativePath: string }) => Promise<{ cachedPath: string; size: number }>
+  getArchiveResources: (options: { storageId: string }) => Promise<{ resources: Record<string, ExternalArchiveResource> }>
   createPdf: (options: { title: string; content: string }) => Promise<{
     uri: string
     path: string
@@ -142,13 +187,24 @@ type FastViewerFilesPlugin = {
     resources: Record<string, ExternalArchiveResource>
     count: number
   }>
+  setVolumePageEnabled: (options: { enabled: boolean }) => Promise<void>
+  setSelectionActionsEnabled: (options: { enabled: boolean }) => Promise<void>
+  prepareShareCache: (options: { expectedBytes: number }) => Promise<{ availableBytes: number }>
   addListener: (
-    eventName: 'fileOpen',
-    listenerFunc: (result: ExternalFileResult) => void,
+    eventName: 'fileOpen' | 'openRequestAvailable' | 'volumePage' | 'layoutChanged',
+    listenerFunc: (result: ExternalFileResult | { count: number } | { direction: 'previous' | 'next' } | NativeWindowLayout) => void,
   ) => Promise<PluginListenerHandle>
 }
 
 const FastViewerFiles = registerPlugin<FastViewerFilesPlugin>('FastViewerFiles')
+
+type NativeSelectionAction = 'highlight' | 'note' | 'card'
+
+type ReaderSelectionAction = {
+  anchor: AnnotationAnchor
+  x: number
+  y: number
+}
 
 const SETTINGS_KEY = 'lightpage.settings.v1'
 
@@ -218,7 +274,7 @@ const seedDocuments: DocumentRecord[] = [
 function App() {
   const [view, setView] = useState<View>('home')
   const [activeTab, setActiveTab] = useState<HomeTab>('recent')
-  const [documents, setDocuments, documentsHydrated] = usePersistentDocuments()
+  const [documents, setDocuments, documentsHydrated, loadStoredDocument, documentRepository] = usePersistentDocuments()
   const [activeDocumentId, setActiveDocumentId] = useState(documents[0]?.id ?? '')
   const [fileError, setFileError] = useState<FileOpenError | null>(null)
   const [toast, setToast] = useState<ToastState | null>(null)
@@ -228,13 +284,25 @@ function App() {
   )
   const [largeSizeConfirm, setLargeSizeConfirm] = useState<{ resolve: (v: boolean) => void; size: number } | null>(null)
   const [pasteDraft, setPasteDraft] = useState<string | null>(null)
+  const [failedOpenRequest, setFailedOpenRequest] = useState<NativeOpenRequest | null>(null)
+  const [returnDocumentId, setReturnDocumentId] = useState<string | null>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
   const archiveCleanupStartedRef = useRef(false)
+  const openQueueRunningRef = useRef(false)
+  const drainOpenQueueRef = useRef<() => void>(() => undefined)
+  const toastTimerRef = useRef<number | null>(null)
+  const activeDocumentIdRef = useRef(activeDocumentId)
+  const viewRef = useRef(view)
   const isDesktop = desktopPlatform.isDesktop()
 
   const activeDocument = documents.find((doc) => doc.id === activeDocumentId) ?? documents[0]
 
   const resolvedTheme: ThemeMode = settings.themeMode === 'system' ? systemTheme : settings.themeMode
+
+  useEffect(() => {
+    activeDocumentIdRef.current = activeDocumentId
+    viewRef.current = view
+  }, [activeDocumentId, view])
 
   useEffect(() => {
     const media = window.matchMedia?.('(prefers-color-scheme: dark)')
@@ -243,6 +311,10 @@ function App() {
     update()
     media.addEventListener('change', update)
     return () => media.removeEventListener('change', update)
+  }, [])
+
+  useEffect(() => () => {
+    if (toastTimerRef.current !== null) window.clearTimeout(toastTimerRef.current)
   }, [])
 
   useEffect(() => {
@@ -254,11 +326,43 @@ function App() {
   }, [])
 
   useEffect(() => {
+    if (!Capacitor.isNativePlatform()) return undefined
+    let handle: PluginListenerHandle | null = null
+    let disposed = false
+    void FastViewerFiles.addListener('layoutChanged', (result) => {
+      if (!('features' in result)) return
+      const fold = result.features.find((item) => item.separating)
+      const root = document.documentElement
+      if (!fold) {
+        delete root.dataset.foldOrientation
+        root.style.removeProperty('--fold-left')
+        root.style.removeProperty('--fold-top')
+        root.style.removeProperty('--fold-width')
+        root.style.removeProperty('--fold-height')
+        return
+      }
+      root.dataset.foldOrientation = fold.orientation
+      root.style.setProperty('--fold-left', `${fold.left}px`)
+      root.style.setProperty('--fold-top', `${fold.top}px`)
+      root.style.setProperty('--fold-width', `${Math.max(0, fold.right - fold.left)}px`)
+      root.style.setProperty('--fold-height', `${Math.max(0, fold.bottom - fold.top)}px`)
+    }).then((listener) => {
+      if (disposed) void listener.remove()
+      else handle = listener
+    })
+    return () => {
+      disposed = true
+      void handle?.remove()
+    }
+  }, [])
+
+  useEffect(() => {
     if (!documentsHydrated || !Capacitor.isNativePlatform() || archiveCleanupStartedRef.current) return
     archiveCleanupStartedRef.current = true
     const storageIds = Array.from(new Set(documents.flatMap((item) => [item.archiveStorageId, item.resourceStorageId].filter(Boolean)))) as string[]
     void FastViewerFiles.cleanupArchives({ storageIds }).catch(() => undefined)
-  }, [documents, documentsHydrated])
+    void FastViewerFiles.clearRegenerableCache({ limitMb: settings.cacheLimitMb }).catch(() => undefined)
+  }, [documents, documentsHydrated, settings.cacheLimitMb])
 
   useEffect(() => {
     resetViewportScroll()
@@ -271,8 +375,12 @@ function App() {
   }, [activeDocumentId, documents])
 
   const showToast = (message: string, tone: ToastState['tone'] = 'normal') => {
+    if (toastTimerRef.current !== null) window.clearTimeout(toastTimerRef.current)
     setToast({ message, tone })
-    window.setTimeout(() => setToast(null), 2200)
+    toastTimerRef.current = window.setTimeout(() => {
+      toastTimerRef.current = null
+      setToast(null)
+    }, 2200)
   }
 
   const showError = (code: FileOpenErrorCode, message: string) => {
@@ -287,24 +395,69 @@ function App() {
     })
   }, [setDocuments])
 
-  const openDocument = (doc: DocumentRecord) => {
+  const openDocument = async (doc: DocumentRecord) => {
+    const existingSession = documentSessions.list().find((item) => item.documentId === doc.id)
+    const session = existingSession ?? documentSessions.create(doc.id, doc.contentRevision ?? '', ['read', 'search'])
+    documentSessions.activate(session.sessionId)
+    let openedDocument = doc
+    if (doc.payloadLoaded === false) {
+      setView('loading')
+      try {
+        if (doc.archiveStorageId && doc.archiveRelativePath && Capacitor.isNativePlatform()) {
+          const entry = await FastViewerFiles.openArchiveEntry({
+            storageId: doc.archiveStorageId,
+            relativePath: doc.archiveRelativePath,
+          })
+          const resourceResult = await FastViewerFiles.getArchiveResources({ storageId: doc.archiveStorageId })
+          const bytes = await readNativeStoredFile(entry.cachedPath, entry.size)
+          const decoded = await decodeDocumentBytes(bytes)
+          openedDocument = {
+            ...doc,
+            content: decoded.content,
+            rawBase64: decoded.rawBase64,
+            encoding: decoded.encoding,
+            archiveResources: Object.fromEntries(Object.entries(resourceResult.resources).map(([key, resource]) => [key, Capacitor.convertFileSrc(resource.path)])),
+            payloadLoaded: true,
+            contentRevision: stableDocumentId(doc.fileName, decoded.content),
+          }
+          setDocuments((items) => items.map((item) => item.id === doc.id ? openedDocument : item))
+        } else {
+          openedDocument = await loadStoredDocument(doc.id) ?? doc
+        }
+      } catch {
+        documentSessions.update(session.sessionId, { status: 'failed', error: '文档正文不存在或已被系统清理。' })
+        showError('FILE_NOT_FOUND', '文档正文不存在或已被系统清理。')
+        return
+      }
+    }
     const openedAt = new Date().toISOString()
     persistDocuments((items) =>
-      upsertDocument(items, { ...doc, lastOpenedAt: openedAt }),
+      upsertDocument(items, { ...openedDocument, lastOpenedAt: openedAt }),
     )
-    setActiveDocumentId(doc.id)
+    setActiveDocumentId(openedDocument.id)
     setView('reader')
+    if (openedDocument.packageId) {
+      void documentRepository.getPackage(openedDocument.packageId).then((item) => {
+        if (!item) return
+        return documentRepository.savePackage({ ...item, lastEntryId: openedDocument.id, lastOpenedAt: openedAt })
+      }).catch(() => undefined)
+    }
+    documentSessions.update(session.sessionId, {
+      status: 'ready',
+      revision: openedDocument.contentRevision ?? session.revision,
+      capabilities: openedDocument.fileType === 'markdown' ? ['read', 'search', 'toc', 'annotate'] : ['read', 'search', 'toc'],
+    })
     if (
       desktopPlatform.isDesktop()
-      && doc.fileType === 'markdown'
-      && doc.sourceUri
-      && !doc.archiveResources
+      && openedDocument.fileType === 'markdown'
+      && openedDocument.sourceUri
+      && !openedDocument.archiveResources
     ) {
-      void desktopPlatform.loadMarkdownResources(doc.sourceUri, doc.content)
+      void desktopPlatform.loadMarkdownResources(openedDocument.sourceUri, openedDocument.content)
         .then((resources) => {
           if (Object.keys(resources).length === 0) return
           persistDocuments((items) =>
-            upsertDocument(items, { ...doc, archiveResources: resources, lastOpenedAt: openedAt }),
+            upsertDocument(items, { ...openedDocument, archiveResources: resources, lastOpenedAt: openedAt }),
           )
         })
         .catch(() => undefined)
@@ -315,6 +468,8 @@ function App() {
     persistDocuments((items) => upsertDocument(items, doc))
     setActiveDocumentId(doc.id)
     if (openAfterImport) {
+      const session = documentSessions.create(doc.id, doc.contentRevision ?? '', doc.fileType === 'markdown' ? ['read', 'search', 'toc', 'annotate'] : ['read', 'search', 'toc'])
+      documentSessions.update(session.sessionId, { status: 'ready' })
       setView('reader')
     }
   }
@@ -346,7 +501,10 @@ function App() {
     startedAt = startPerformanceSpan(),
     loadResources?: (content: string) => Promise<Record<string, string>>,
   ) => {
+    finishPerformanceSpan('content-readable', startedAt, { bytes: bytes.length })
+    const decodeStartedAt = startPerformanceSpan()
     const result = await decodeDocumentBytes(bytes)
+    finishPerformanceSpan('decode-complete', decodeStartedAt, { bytes: bytes.length, encoding: result.encoding })
     // 原始字节写入独立文件存储，不因文件大小退化为 UTF-8 重写。
     const rawBase64 = result.rawBase64
     let archiveResources: Record<string, string> | undefined
@@ -421,6 +579,17 @@ function App() {
     }
 
     const importedAt = Date.now()
+    const packageId = result.storageId ?? result.sha256 ?? crypto.randomUUID()
+    const existingPackage = await documentRepository.getPackage(packageId)
+    if (existingPackage) {
+      const existing = documents.find((item) => item.id === existingPackage.lastEntryId)
+        ?? documents.find((item) => item.packageId === packageId)
+      if (existing) {
+        await openDocument(existing)
+        showToast('已打开现有文档包', 'success')
+        return
+      }
+    }
     const archiveResources = Object.fromEntries(
       Object.entries(result.resources ?? {}).map(([key, resource]) => {
         if (typeof resource === 'string') return [key, resource]
@@ -430,27 +599,57 @@ function App() {
     const records: DocumentRecord[] = []
     for (let index = 0; index < archiveDocuments.length; index += 1) {
       const item = archiveDocuments[index]
-      const bytes = item.cachedPath
-        ? await readNativeStoredFile(item.cachedPath, item.size)
-        : item.base64Content
-          ? base64ToBytes(item.base64Content)
-          : new Uint8Array()
-      if (bytes.length === 0) continue
-      const decoded = await decodeDocumentBytes(bytes)
-      const record = createRecordFromBytes({
-        fileName: item.relativePath ?? item.fileName,
-        content: decoded.content,
-        encoding: decoded.encoding,
-        rawBase64: decoded.rawBase64,
-        sourceType: `压缩包：${result.fileName ?? item.archiveName ?? '未知压缩包'}`,
-        sourceUri: item.sourceUri ?? result.uri,
-        fileSize: item.size ?? bytes.length,
-        inLibrary: true,
-        lastOpenedAt: new Date(importedAt - index).toISOString(),
-        archiveRelativePath: item.relativePath,
-        archiveResources,
-        archiveStorageId: result.storageId,
-      })
+      const relativePath = item.relativePath ?? item.fileName
+      const documentId = stableDocumentId(packageId, relativePath)
+      let record: DocumentRecord
+      if (index === 0) {
+        const bytes = item.cachedPath
+          ? await readNativeStoredFile(item.cachedPath, item.size)
+          : item.base64Content
+            ? base64ToBytes(item.base64Content)
+            : new Uint8Array()
+        if (bytes.length === 0) continue
+        const decoded = await decodeDocumentBytes(bytes)
+        record = {
+          ...createRecordFromBytes({
+            fileName: relativePath,
+            content: decoded.content,
+            encoding: decoded.encoding,
+            rawBase64: decoded.rawBase64,
+            sourceType: `压缩包：${result.fileName ?? item.archiveName ?? '未知压缩包'}`,
+            sourceUri: item.sourceUri ?? result.uri,
+            fileSize: item.size ?? bytes.length,
+            inLibrary: true,
+            lastOpenedAt: new Date(importedAt - index).toISOString(),
+            archiveRelativePath: relativePath,
+            archiveResources,
+            archiveStorageId: packageId,
+          }),
+          id: documentId,
+          packageId,
+          packageName: result.fileName,
+          payloadLoaded: true,
+          contentRevision: stableDocumentId(relativePath, decoded.content),
+        }
+      } else {
+        record = {
+          ...createRecordFromContent({
+            fileName: relativePath,
+            content: '',
+            sourceType: `压缩包：${result.fileName ?? item.archiveName ?? '未知压缩包'}`,
+            sourceUri: item.sourceUri ?? result.uri,
+            fileSize: item.size ?? 0,
+            inLibrary: true,
+            lastOpenedAt: new Date(importedAt - index).toISOString(),
+          }),
+          id: documentId,
+          archiveRelativePath: relativePath,
+          archiveStorageId: packageId,
+          packageId,
+          packageName: result.fileName,
+          payloadLoaded: false,
+        }
+      }
       records.push(record)
     }
 
@@ -460,28 +659,58 @@ function App() {
     }
 
     persistDocuments((items) => records.reduce((next, record) => upsertDocument(next, record), items))
+    await documentRepository.savePackage({
+      id: packageId,
+      fileName: result.fileName ?? '文档包',
+      sha256: result.sha256,
+      sourceUri: result.uri,
+      storageId: packageId,
+      originalAvailable: Boolean(result.originalPath),
+      durableExtraction: !result.originalPath,
+      lastEntryId: records[0].id,
+      createdAt: new Date(importedAt).toISOString(),
+      lastOpenedAt: new Date(importedAt).toISOString(),
+      totalSize: result.size ?? records.reduce((total, item) => total + item.fileSize, 0),
+    })
+    await documentRepository.savePackageEntries(records.map((item, order) => ({
+      id: `${packageId}:${item.archiveRelativePath ?? item.id}`,
+      packageId,
+      documentId: item.id,
+      relativePath: item.archiveRelativePath ?? item.fileName,
+      fileName: item.fileName,
+      fileType: item.fileType,
+      size: item.fileSize,
+      order,
+      isFavorite: item.isFavorite,
+    })))
+    const session = documentSessions.create(records[0].id, records[0].contentRevision ?? '', ['read', 'search', 'toc', 'annotate', 'package'])
+    documentSessions.update(session.sessionId, { status: records[0].payloadLoaded === false ? 'loading' : 'ready' })
     setActiveDocumentId(records[0].id)
     setView('reader')
     showToast(`已从压缩包导入 ${records.length} 个可查看文件`, 'success')
   }
 
-  const importExternalResult = async (result: ExternalFileResult) => {
+  const importExternalResult = async (result: ExternalFileResult, fromQueue = false): Promise<boolean> => {
     if (result.error || result.errorCode) {
       const code = (result.errorCode as FileOpenErrorCode) || 'UNKNOWN'
       showError(code, result.error || '外部文件读取失败')
-      return
+      return false
     }
 
-    if (!result.hasFile) return
+    if (!result.hasFile) return false
+    if (fromQueue && viewRef.current === 'reader' && activeDocumentIdRef.current) {
+      setReturnDocumentId(activeDocumentIdRef.current)
+    }
 
     if (result.isArchive || result.documents?.length) {
       setView('loading')
       try {
         await importArchiveDocuments(result)
+        return true
       } catch {
         showError('ARCHIVE_FAILED', '压缩包内容处理失败，请确认文件未损坏。')
+        return false
       }
-      return
     }
 
     // Backwards compat: if native sent base64Content, use new pipeline
@@ -493,7 +722,7 @@ function App() {
         const action = await checkFileSizeAndConfirm(size)
         if (action === 'cancel') {
           setView('home')
-          return
+          return false
         }
       } else if (size > 0 && size >= FILE_SIZE_WARNING) {
         showToast(`文件较大（${formatBytes(size)}），渲染可能较慢`, 'warning')
@@ -503,10 +732,11 @@ function App() {
       try {
         const bytes = base64ToBytes(result.base64Content)
         await processBytes(bytes, result.fileName, '外部应用', result.uri, result.size)
+        return true
       } catch {
         showError('UNKNOWN', '文件解码失败，请尝试重新打开。')
+        return false
       }
-      return
     }
 
     if (result.cachedPath && result.fileName) {
@@ -517,7 +747,7 @@ function App() {
         if (action === 'cancel') {
           await FastViewerFiles.releaseStoredFile({ path: result.cachedPath }).catch(() => undefined)
           setView('home')
-          return
+          return false
         }
       } else if (size > 0 && size >= FILE_SIZE_WARNING) {
         showToast(`文件较大（${formatBytes(size)}），渲染可能较慢`, 'warning')
@@ -527,12 +757,13 @@ function App() {
       try {
         const bytes = await readNativeStoredFile(result.cachedPath, result.size)
         await processBytes(bytes, result.fileName, '外部应用', result.uri, result.size)
+        return true
       } catch {
         showError('UNKNOWN', '文件分块读取失败，请尝试重新打开。')
+        return false
       } finally {
-        await FastViewerFiles.releaseStoredFile({ path: result.cachedPath }).catch(() => undefined)
+        if (!result.requestId) await FastViewerFiles.releaseStoredFile({ path: result.cachedPath }).catch(() => undefined)
       }
-      return
     }
 
     // Legacy fallback: old native sent content as string
@@ -547,7 +778,9 @@ function App() {
       })
       importDocument(record)
       showToast('已从外部应用打开文件', 'success')
+      return true
     }
+    return false
   }
 
   const loadExternalLaunchFile = async () => {
@@ -562,9 +795,51 @@ function App() {
   }
 
   useEffect(() => {
-    void loadExternalLaunchFile()
+    if (!Capacitor.isNativePlatform() || !documentsHydrated) return undefined
+    let disposed = false
+    let handle: PluginListenerHandle | undefined
+    const drainQueue = async () => {
+      if (disposed || openQueueRunningRef.current) return
+      openQueueRunningRef.current = true
+      try {
+        const { requests } = await FastViewerFiles.getPendingOpenRequests()
+        for (const request of requests) {
+          if (disposed) break
+          if (request.error) {
+            setFailedOpenRequest(request)
+            showToast(`${request.fileName} 等待处理`, 'warning')
+            break
+          }
+          try {
+            const result = await FastViewerFiles.resolveOpenRequest({ requestId: request.requestId })
+            const imported = await importExternalResult(result, true)
+            if (!imported) break
+            await FastViewerFiles.acknowledgeOpenRequest({ requestId: request.requestId })
+          } catch (error) {
+            setFailedOpenRequest({ ...request, error: error instanceof Error ? error.message : '外部打开请求处理失败' })
+            break
+          }
+        }
+      } finally {
+        openQueueRunningRef.current = false
+      }
+    }
+    drainOpenQueueRef.current = () => { void drainQueue() }
+    void FastViewerFiles.addListener('openRequestAvailable', () => { void drainQueue() }).then((listenerHandle) => {
+      handle = listenerHandle
+      void drainQueue()
+    }).catch(() => {
+      // Older native builds keep the legacy launch-file API available.
+      void loadExternalLaunchFile()
+    })
+    return () => {
+      disposed = true
+      drainOpenQueueRef.current = () => undefined
+      void handle?.remove()
+    }
+    // Queue ownership and serialization start only after v3 hydration, so migration cannot overwrite an import.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [])
+  }, [documentsHydrated])
 
   useEffect(() => {
     if (!isDesktop) return undefined
@@ -593,22 +868,6 @@ function App() {
     // The desktop bridge owns event serialization and is initialized once per app mount.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isDesktop])
-
-  useEffect(() => {
-    if (!Capacitor.isNativePlatform()) return undefined
-
-    let handle: PluginListenerHandle | undefined
-    void FastViewerFiles.addListener('fileOpen', (result) => {
-      void importExternalResult(result)
-    }).then((listenerHandle) => {
-      handle = listenerHandle
-    })
-
-    return () => {
-      void handle?.remove()
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [])
 
   const handlePickedFile = async (file: File) => {
     const startedAt = startPerformanceSpan()
@@ -695,7 +954,24 @@ function App() {
     )
   }, [activeDocumentId, persistDocuments])
 
-  const deleteDocument = (doc: DocumentRecord) => {
+  const deleteDocument = async (doc: DocumentRecord) => {
+    if (doc.packageId) {
+      const entries = documents.filter((item) => item.packageId === doc.packageId)
+      const favoriteCount = entries.filter((item) => item.isFavorite).length
+      const annotationCount = (await Promise.all(entries.map((item) => documentRepository.listAnnotations(item.id).catch(() => []))))
+        .reduce((total, items) => total + items.length, 0)
+      const warning = `确定删除文档包“${doc.packageName ?? doc.fileName}”及其中 ${entries.length} 篇文档、${annotationCount} 条批注吗？${favoriteCount ? `其中 ${favoriteCount} 篇已收藏。` : ''}`
+      if (!window.confirm(warning) || (favoriteCount > 0 && !window.confirm('已收藏内容和对应批注也会删除，请再次确认。'))) return
+      persistDocuments((items) => items.filter((item) => item.packageId !== doc.packageId))
+      if (doc.archiveStorageId) void FastViewerFiles.releaseArchive({ storageId: doc.archiveStorageId }).catch(() => undefined)
+      void documentRepository.deletePackage(doc.packageId).catch(() => undefined)
+      if (entries.some((item) => item.id === activeDocumentId)) {
+        const next = documents.find((item) => item.packageId !== doc.packageId)
+        setActiveDocumentId(next?.id ?? '')
+      }
+      showToast('已删除文档包及其本地数据', 'success')
+      return
+    }
     persistDocuments((items) => items.filter((item) => item.id !== doc.id))
     if (activeDocumentId === doc.id) {
       const next = documents.find((item) => item.id !== doc.id)
@@ -741,8 +1017,8 @@ function App() {
   }
 
   return (
-    <div className="app-shell">
-      <input
+    <div className={`app-shell view-${view}`}>
+      {documentsHydrated && <input
         ref={fileInputRef}
         className="visually-hidden"
         type="file"
@@ -751,7 +1027,7 @@ function App() {
           const file = event.target.files?.[0]
           if (file) void handlePickedFile(file)
         }}
-      />
+      />}
 
       <main className="app-main">
         {view === 'home' && (
@@ -759,7 +1035,7 @@ function App() {
             activeTab={activeTab}
             documents={documents}
             onTabChange={setActiveTab}
-            onOpenFile={openDocument}
+            onOpenFile={(document) => { void openDocument(document) }}
             onPickFile={() => { void openFilePicker() }}
             onPasteOpen={() => { void openPasteDialog() }}
             onDelete={deleteDocument}
@@ -783,11 +1059,18 @@ function App() {
               showToast('已完成批量清理', 'success')
             }}
             onToggleFavorite={(doc) =>
-              persistDocuments((items) =>
+              {
+                persistDocuments((items) =>
                 items.map((item) =>
                   item.id === doc.id ? { ...item, isFavorite: !item.isFavorite } : item,
                 ),
-              )
+                )
+                if (doc.packageId) {
+                  void documentRepository.listPackageEntries(doc.packageId)
+                    .then((entries) => documentRepository.savePackageEntries(entries.map((entry) => entry.documentId === doc.id ? { ...entry, isFavorite: !doc.isFavorite } : entry)))
+                    .catch(() => undefined)
+                }
+              }
             }
           />
         )}
@@ -795,12 +1078,18 @@ function App() {
         {view === 'reader' && activeDocument && (
           <ReaderPage
             document={activeDocument}
+            packageDocuments={activeDocument.packageId
+              ? documents.filter((item) => item.packageId === activeDocument.packageId)
+                .sort(comparePackageDocuments)
+              : []}
             settings={settings}
             resolvedTheme={resolvedTheme}
             onBack={() => setView('home')}
             onUpdate={updateActiveDocument}
             onShowToast={showToast}
             onSetSettings={setSettings}
+            onOpenPackageDocument={(item) => { void openDocument(item) }}
+            annotationRepository={documentRepository}
           />
         )}
 
@@ -861,8 +1150,38 @@ function App() {
         />
       )}
 
+      {failedOpenRequest && (
+        <div className="sheet-backdrop" role="presentation">
+          <section className="sheet" role="dialog" aria-modal="true" aria-label="外部打开请求处理失败">
+            <header className="sheet-header"><h2>文件尚未导入</h2></header>
+            <p className="large-file-warning">{failedOpenRequest.fileName}：{failedOpenRequest.error ?? '处理失败，临时文件已安全保留。'}</p>
+            <div className="error-actions">
+              <button className="primary-action compact" type="button" onClick={() => {
+                setFailedOpenRequest(null)
+                drainOpenQueueRef.current()
+              }}>重试</button>
+              <button className="secondary-action compact" type="button" onClick={() => {
+                const requestId = failedOpenRequest.requestId
+                void FastViewerFiles.discardOpenRequest({ requestId }).then(() => {
+                  setFailedOpenRequest(null)
+                  drainOpenQueueRef.current()
+                }).catch((error) => showToast(error instanceof Error ? error.message : '无法丢弃请求', 'warning'))
+              }}>丢弃</button>
+            </div>
+          </section>
+        </div>
+      )}
+
+      {returnDocumentId && view === 'reader' && returnDocumentId !== activeDocumentId && (
+        <button className="return-document-toast" type="button" onClick={() => {
+          const previous = documents.find((item) => item.id === returnDocumentId)
+          setReturnDocumentId(null)
+          if (previous) void openDocument(previous)
+        }}>返回上一文档</button>
+      )}
+
       {toast && (
-        <div className={`toast ${toast.tone ?? 'normal'}`} role="status">
+        <div className={`toast ${toast.tone ?? 'normal'}`} role="status" aria-live="polite">
           {toast.message}
         </div>
       )}
@@ -899,11 +1218,12 @@ function HomePage({
   const [visibleCount, setVisibleCount] = useState(50)
   const files = useMemo(() => {
     const normalizedQuery = debouncedLibraryQuery.trim().toLocaleLowerCase()
-    const filtered = documents.filter((doc) => {
+    const collapsed = collapsePackageDocuments(documents)
+    const filtered = collapsed.filter((doc) => {
       if (activeTab === 'favorite' && !doc.isFavorite) return false
       if (activeTab === 'library' && !doc.inLibrary) return false
       return !normalizedQuery
-        || doc.fileName.toLocaleLowerCase().includes(normalizedQuery)
+        || (doc.packageName ?? doc.fileName).toLocaleLowerCase().includes(normalizedQuery)
         || doc.content.toLocaleLowerCase().includes(normalizedQuery)
     })
     return filtered.sort((left, right) => {
@@ -1031,12 +1351,12 @@ function HomePage({
                   )}
                 </span>
                 <span className="file-main">
-                  <span className="file-name">{file.fileName}</span>
+                  <span className="file-name">{file.packageName ?? file.fileName}</span>
                   <span className="file-meta">
                     {file.sourceType} · {formatBytes(file.fileSize)} · {formatTime(file.lastOpenedAt)}
                   </span>
                 </span>
-                <span className="file-kind">{file.fileExtension.toUpperCase()}</span>
+                <span className="file-kind">{file.packageId ? '文档包' : file.fileExtension.toUpperCase()}</span>
               </button>
               <div className="file-row-actions">
                 <button
@@ -1071,22 +1391,28 @@ function HomePage({
 
 type ReaderPageProps = {
   document: DocumentRecord
+  packageDocuments: DocumentRecord[]
   settings: ReaderSettings
   resolvedTheme: ThemeMode
   onBack: () => void
   onUpdate: (patch: Partial<DocumentRecord>) => void
   onShowToast: (message: string, tone?: ToastState['tone']) => void
   onSetSettings: (settings: ReaderSettings) => void
+  onOpenPackageDocument: (document: DocumentRecord) => void
+  annotationRepository: DocumentRepository
 }
 
 function ReaderPage({
   document,
+  packageDocuments,
   settings,
   resolvedTheme,
   onBack,
   onUpdate,
   onShowToast,
   onSetSettings,
+  onOpenPackageDocument,
+  annotationRepository,
 }: ReaderPageProps) {
   const isDesktop = desktopPlatform.isDesktop()
   const [searchOpen, setSearchOpen] = useState(false)
@@ -1102,9 +1428,24 @@ function ReaderPage({
   const [menuOpen, setMenuOpen] = useState(false)
   const [menuPosition, setMenuPosition] = useState({ x: 0, y: 0 })
   const [readerToolsOpen, setReaderToolsOpen] = useState(false)
+  const [readerToolbarY, setReaderToolbarY] = useState<number | null>(settings.readerToolbarY)
   const [encodingOpen, setEncodingOpen] = useState(false)
   const [htmlPermissionsOpen, setHtmlPermissionsOpen] = useState(false)
   const [imageExportOpen, setImageExportOpen] = useState(false)
+  const [packageOpen, setPackageOpen] = useState(false)
+  const [annotationsOpen, setAnnotationsOpen] = useState(false)
+  const [annotations, setAnnotations] = useState<DocumentAnnotation[]>([])
+  const [contentRevision, setContentRevision] = useState(document.contentRevision ?? '')
+  const [renderPlainText, setRenderPlainText] = useState('')
+  const [annotationRenderTick, setAnnotationRenderTick] = useState(0)
+  const [selectionAction, setSelectionAction] = useState<ReaderSelectionAction | null>(null)
+  const [shareCardText, setShareCardText] = useState<string | null>(null)
+  const [shareCardTemplate, setShareCardTemplate] = useState<ShareCardTemplate>('simple')
+  const [shareCardSourceUrl, setShareCardSourceUrl] = useState('')
+  const [shareCardQrEnabled, setShareCardQrEnabled] = useState(false)
+  const [shareCardQrDataUrl, setShareCardQrDataUrl] = useState('')
+  const [removedShareCardPages, setRemovedShareCardPages] = useState<number[]>([])
+  const [immersive, setImmersive] = useState(false)
   const [readerMode, setReaderMode] = useState<ReaderMode>(
     document.fileSize >= FILE_SIZE_DANGER ? 'source' : 'rendered',
   )
@@ -1112,6 +1453,7 @@ function ReaderPage({
   const [allowExternalOnce, setAllowExternalOnce] = useState(false)
   const [htmlFrameVersion, setHtmlFrameVersion] = useState(0)
   const contentRef = useRef<HTMLElement | null>(null)
+  const shareCardContainerRef = useRef<HTMLDivElement | null>(null)
   const scrollRef = useRef<HTMLElement | null>(null)
   const iframeRef = useRef<HTMLIFrameElement | null>(null)
   const searchMatchesRef = useRef<HTMLElement[]>([])
@@ -1120,16 +1462,280 @@ function ReaderPage({
   const readPositionTimerRef = useRef<number | null>(null)
   const headingFrameRef = useRef<number | null>(null)
   const pendingReadPositionRef = useRef<{ top: number; progress: number; headingId?: string } | null>(null)
-  const edgeSwipeRef = useRef({
+  const readerToolbarDragRef = useRef({
     active: false,
-    startX: 0,
+    moved: false,
+    suppressClick: false,
+    pointerId: null as number | null,
     startY: 0,
-    lastX: 0,
-    lastY: 0,
+    lastRatio: settings.readerToolbarY ?? 0.9,
   })
+  const renderStartedAtRef = useRef(0)
+  const renderMetricsRevisionRef = useRef('')
   const handleOpenExternalLink = useCallback((url: string) => {
     void desktopPlatform.openExternalLink(url)
   }, [])
+  const handleRenderPlanReady = useCallback((plan: { plainText: string; revision?: string }) => {
+    setRenderPlainText(plan.plainText)
+    const revision = plan.revision ?? `${document.id}:${plan.plainText.length}`
+    if (renderMetricsRevisionRef.current === revision) return
+    renderMetricsRevisionRef.current = revision
+    finishPerformanceSpan('render-plan-complete', renderStartedAtRef.current, { characters: plan.plainText.length })
+    window.requestAnimationFrame(() => {
+      finishPerformanceSpan('first-paint', renderStartedAtRef.current, { characters: plan.plainText.length })
+      window.setTimeout(() => finishPerformanceSpan('fully-interactive', renderStartedAtRef.current, { characters: plan.plainText.length }), 0)
+    })
+  }, [document.id])
+  const handleRenderChange = useCallback(() => {
+    setAnnotationRenderTick((value) => value + 1)
+  }, [])
+
+  useEffect(() => {
+    setRenderPlainText('')
+    renderStartedAtRef.current = startPerformanceSpan()
+    renderMetricsRevisionRef.current = ''
+  }, [document.id])
+
+  useEffect(() => {
+    setReaderToolbarY(settings.readerToolbarY)
+  }, [settings.readerToolbarY])
+
+  useEffect(() => {
+    window.document.documentElement.dataset.readerToc = desktopTocOpen ? 'open' : 'closed'
+    return () => {
+      delete window.document.documentElement.dataset.readerToc
+    }
+  }, [desktopTocOpen])
+
+  useEffect(() => {
+    if (document.fileType !== 'markdown') {
+      setAnnotations([])
+      return
+    }
+    let cancelled = false
+    void sha256Text(document.content).then(async (revision) => {
+      if (cancelled) return
+      setContentRevision(revision)
+      if (document.contentRevision !== revision) onUpdate({ contentRevision: revision })
+      const stored = await annotationRepository.listAnnotations(document.id)
+      const progressiveText = contentRef.current?.classList.contains('progressive-markdown') ? renderPlainText : ''
+      const rootText = progressiveText || (contentRef.current ? canonicalText(contentRef.current) : document.content)
+      const restored = stored.map((item) => reanchorAnnotation(item, rootText, revision))
+      if (cancelled) return
+      setAnnotations(restored)
+      await Promise.all(restored.filter((item, index) => item !== stored[index]).map((item) => annotationRepository.saveAnnotation(item)))
+    })
+    return () => { cancelled = true }
+  }, [annotationRepository, document.content, document.contentRevision, document.fileType, document.id, onUpdate, renderPlainText])
+
+  useEffect(() => {
+    if (document.fileType !== 'markdown' || readerMode !== 'rendered') return undefined
+    const frame = window.requestAnimationFrame(() => {
+      if (contentRef.current) applyAnnotationHighlights(contentRef.current, annotations)
+    })
+    return () => window.cancelAnimationFrame(frame)
+  }, [annotationRenderTick, annotations, document.content, document.fileType, readerMode])
+
+  const readReaderSelection = useCallback((): ReaderSelectionAction | null => {
+    if (document.fileType !== 'markdown' || readerMode !== 'rendered' || !contentRef.current || !contentRevision) return null
+    const progressiveText = contentRef.current.classList.contains('progressive-markdown') ? renderPlainText : undefined
+    const anchor = captureSelectionAnchor(contentRef.current, contentRevision, activeHeadingId || undefined, progressiveText)
+    const selection = window.getSelection()
+    if (!anchor || !selection || selection.rangeCount === 0) {
+      return null
+    }
+    const overlaps = annotations.some((item) => item.status === 'active'
+      && item.kind !== 'bookmark'
+      && anchor.start < item.anchor.end
+      && anchor.end > item.anchor.start)
+    if (overlaps) {
+      onShowToast('所选文字与已有批注重叠', 'warning')
+      return null
+    }
+    const rect = selection.getRangeAt(0).getBoundingClientRect()
+    return {
+      anchor,
+      x: clamp(rect.left + rect.width / 2, 88, window.innerWidth - 88),
+      y: Math.max(68, rect.top - 12),
+    }
+  }, [activeHeadingId, annotations, contentRevision, document.fileType, onShowToast, readerMode, renderPlainText])
+
+  const captureReaderSelection = () => {
+    if (Capacitor.isNativePlatform()) {
+      setSelectionAction(null)
+      return
+    }
+    setSelectionAction(readReaderSelection())
+  }
+
+  const saveSelectionAnnotation = useCallback(async (kind: 'highlight' | 'note', action = selectionAction) => {
+    if (!action) return
+    let note: string | undefined
+    if (kind === 'note') {
+      const value = window.prompt('输入批注（最多 2000 字）', '')
+      if (value === null) return
+      note = value.trim().slice(0, 2000)
+    }
+    const now = new Date().toISOString()
+    const item: DocumentAnnotation = {
+      id: crypto.randomUUID(),
+      documentId: document.id,
+      kind,
+      anchor: action.anchor,
+      note,
+      color: 'yellow',
+      status: 'active',
+      createdAt: now,
+      updatedAt: now,
+    }
+    await annotationRepository.saveAnnotation(item)
+    setAnnotations((current) => [...current, item])
+    setSelectionAction(null)
+    window.getSelection()?.removeAllRanges()
+    onShowToast(kind === 'note' ? '批注已保存' : '已高亮所选文字', 'success')
+  }, [annotationRepository, document.id, onShowToast, selectionAction])
+
+  const handleNativeSelectionAction = useCallback((action: NativeSelectionAction) => {
+    setReaderToolsOpen(false)
+    const currentSelection = readReaderSelection()
+    if (!currentSelection) {
+      onShowToast('未能读取所选文字，请重新选择', 'warning')
+      return
+    }
+    if (action === 'card') {
+      setShareCardText(currentSelection.anchor.exact)
+      setSelectionAction(null)
+      window.getSelection()?.removeAllRanges()
+      return
+    }
+    void saveSelectionAnnotation(action, currentSelection)
+  }, [onShowToast, readReaderSelection, saveSelectionAnnotation])
+
+  const addBookmark = async () => {
+    if (!contentRef.current || document.fileType !== 'markdown') return
+    const now = new Date().toISOString()
+    const item: DocumentAnnotation = {
+      id: crypto.randomUUID(),
+      documentId: document.id,
+      kind: 'bookmark',
+      anchor: createBookmarkAnchor(
+        contentRef.current,
+        contentRevision,
+        activeHeadingId || undefined,
+        contentRef.current.classList.contains('progressive-markdown') ? renderPlainText : undefined,
+      ),
+      color: 'yellow',
+      status: 'active',
+      createdAt: now,
+      updatedAt: now,
+    }
+    await annotationRepository.saveAnnotation(item)
+    setAnnotations((current) => [...current, item])
+    onShowToast('书签已添加', 'success')
+  }
+
+  const removeAnnotation = async (id: string) => {
+    await annotationRepository.deleteAnnotation(id)
+    setAnnotations((current) => current.filter((item) => item.id !== id))
+  }
+
+  const editAnnotation = async (item: DocumentAnnotation) => {
+    const value = window.prompt('编辑批注（最多 2000 字）', item.note ?? '')
+    if (value === null) return
+    const updated: DocumentAnnotation = {
+      ...item,
+      kind: 'note',
+      note: value.trim().slice(0, 2000),
+      updatedAt: new Date().toISOString(),
+    }
+    await annotationRepository.saveAnnotation(updated)
+    setAnnotations((current) => current.map((candidate) => candidate.id === updated.id ? updated : candidate))
+    onShowToast('批注已更新', 'success')
+  }
+
+  const jumpToAnnotation = (item: DocumentAnnotation) => {
+    if (item.status === 'orphaned') {
+      onShowToast('原文已变化，请重新关联此批注', 'warning')
+      return
+    }
+    if (item.kind === 'bookmark' && item.anchor.headingId) {
+      window.document.getElementById(item.anchor.headingId)?.scrollIntoView({ block: 'start' })
+    } else {
+      contentRef.current?.querySelector<HTMLElement>(`mark[data-annotation-id="${CSS.escape(item.id)}"]`)?.scrollIntoView({ block: 'center' })
+    }
+    setAnnotationsOpen(false)
+  }
+
+  const exportAnnotations = async () => {
+    if (annotations.length === 0) {
+      onShowToast('当前文档没有批注', 'warning')
+      return
+    }
+    const text = annotationsToMarkdown(document.fileName, annotations)
+    if (Capacitor.isNativePlatform()) {
+      await Share.share({ title: `${document.fileName} 批注`, text, dialogTitle: '分享批注摘要' })
+    } else {
+      await navigator.clipboard.writeText(text)
+      onShowToast('批注摘要已复制', 'success')
+    }
+  }
+
+  const allShareCardPages = useMemo(() => splitShareCardText(shareCardText ?? '', 620), [shareCardText])
+  const shareCardPages = useMemo(
+    () => allShareCardPages.map((text, sourceIndex) => ({ text, sourceIndex })).filter((item) => !removedShareCardPages.includes(item.sourceIndex)),
+    [allShareCardPages, removedShareCardPages],
+  )
+  const validShareCardUrl = /^https?:\/\/[^\s]+$/i.test(shareCardSourceUrl.trim())
+
+  useEffect(() => {
+    if (!shareCardQrEnabled || !validShareCardUrl) {
+      setShareCardQrDataUrl('')
+      return
+    }
+    let cancelled = false
+    void QRCode.toDataURL(shareCardSourceUrl.trim(), { width: 160, margin: 1, errorCorrectionLevel: 'M' })
+      .then((url) => { if (!cancelled) setShareCardQrDataUrl(url) })
+    return () => { cancelled = true }
+  }, [shareCardQrEnabled, shareCardSourceUrl, validShareCardUrl])
+
+  useEffect(() => {
+    setRemovedShareCardPages([])
+  }, [shareCardText])
+
+  const exportShareCards = async () => {
+    const pages = Array.from(shareCardContainerRef.current?.querySelectorAll<HTMLElement>('.share-card-page') ?? [])
+    if (pages.length === 0) return
+    setExporting(true)
+    try {
+      const { default: html2canvas } = await import('html2canvas-pro')
+      const canvases = []
+      for (const page of pages) canvases.push(await html2canvas(page, { scale: Math.min(2, window.devicePixelRatio || 1), useCORS: false, logging: false }))
+      if (Capacitor.isNativePlatform()) {
+        const files: string[] = []
+        await FastViewerFiles.prepareShareCache({ expectedBytes: canvases.length * 4 * 1024 * 1024 })
+        for (let index = 0; index < canvases.length; index += 1) {
+          const bytes = await canvasToPngBytes(canvases[index])
+          const path = `share/card-${crypto.randomUUID()}-${index + 1}.png`
+          await Filesystem.writeFile({ path, data: bytesToBase64(bytes), directory: Directory.Cache, recursive: true })
+          files.push((await Filesystem.getUri({ path, directory: Directory.Cache })).uri)
+        }
+        await Share.share({ title: `${document.fileName} 摘录`, files, dialogTitle: '分享阅读卡片' })
+      } else {
+        for (let index = 0; index < canvases.length; index += 1) {
+          const link = window.document.createElement('a')
+          link.href = canvases[index].toDataURL('image/png')
+          link.download = `${document.fileName}-卡片-${index + 1}.png`
+          link.click()
+        }
+      }
+      onShowToast(`已生成 ${canvases.length} 张阅读卡片`, 'success')
+      setShareCardText(null)
+    } catch (error) {
+      onShowToast(`卡片生成失败：${error instanceof Error ? error.message : '未知错误'}`, 'warning')
+    } finally {
+      setExporting(false)
+    }
+  }
 
   const openDesktopFileMenu = (event: React.MouseEvent<HTMLButtonElement>) => {
     const menuWidth = 300
@@ -1340,6 +1946,11 @@ function ReaderPage({
 
   const toggleFavorite = () => {
     onUpdate({ isFavorite: !document.isFavorite })
+    if (document.packageId) {
+      void annotationRepository.listPackageEntries(document.packageId)
+        .then((entries) => annotationRepository.savePackageEntries(entries.map((entry) => entry.documentId === document.id ? { ...entry, isFavorite: !document.isFavorite } : entry)))
+        .catch(() => undefined)
+    }
     onShowToast(document.isFavorite ? '已取消收藏' : '已收藏', 'success')
   }
 
@@ -1380,6 +1991,19 @@ function ReaderPage({
   }
 
   const closeTopReaderLayer = useCallback(() => {
+    if (shareCardText !== null) {
+      setShareCardText(null)
+      return true
+    }
+    if (selectionAction) {
+      setSelectionAction(null)
+      window.getSelection()?.removeAllRanges()
+      return true
+    }
+    if (imageExportOpen) {
+      setImageExportOpen(false)
+      return true
+    }
     if (encodingOpen) {
       setEncodingOpen(false)
       return true
@@ -1404,9 +2028,17 @@ function ReaderPage({
       setReaderToolsOpen(false)
       return true
     }
+    if (packageOpen) {
+      setPackageOpen(false)
+      return true
+    }
+    if (annotationsOpen) {
+      setAnnotationsOpen(false)
+      return true
+    }
 
     return false
-  }, [encodingOpen, htmlPermissionsOpen, menuOpen, readerToolsOpen, searchOpen, tocOpen])
+  }, [annotationsOpen, encodingOpen, htmlPermissionsOpen, imageExportOpen, menuOpen, packageOpen, readerToolsOpen, searchOpen, selectionAction, shareCardText, tocOpen])
 
   useEffect(() => {
     if (!Capacitor.isNativePlatform()) return undefined
@@ -1430,37 +2062,154 @@ function ReaderPage({
     }
   }, [closeTopReaderLayer, onBack])
 
-  const handleEdgePointerDown = (event: React.PointerEvent<HTMLElement>) => {
-    const target = event.target as HTMLElement
-    if (target.closest('button, input, textarea, select, a, .search-panel, .reader-toolbar, .html-frame')) return
+  useEffect(() => {
+    if (!Capacitor.isNativePlatform()) return undefined
+    let handle: PluginListenerHandle | null = null
+    let disposed = false
+    void FastViewerFiles.setVolumePageEnabled({ enabled: settings.volumePageKeys })
+    if (settings.volumePageKeys) {
+      void FastViewerFiles.addListener('volumePage', (result) => {
+        if (!('direction' in result)) return
+        const viewport = scrollRef.current
+        if (!viewport) return
+        viewport.scrollBy({
+          top: (result.direction === 'next' ? 1 : -1) * viewport.clientHeight * 0.86,
+          behavior: 'smooth',
+        })
+      }).then((listener) => {
+        if (disposed) void listener.remove()
+        else handle = listener
+      })
+    }
+    return () => {
+      disposed = true
+      void handle?.remove()
+      void FastViewerFiles.setVolumePageEnabled({ enabled: false })
+    }
+  }, [settings.volumePageKeys])
 
-    edgeSwipeRef.current = {
-      active: event.clientX <= 28,
-      startX: event.clientX,
+  useEffect(() => {
+    const collapseToolsForSelection = () => {
+      const selection = window.getSelection()
+      if (!selection || selection.isCollapsed || !selection.anchorNode || !contentRef.current?.contains(selection.anchorNode)) return
+      setReaderToolsOpen(false)
+    }
+    window.document.addEventListener('selectionchange', collapseToolsForSelection)
+    return () => window.document.removeEventListener('selectionchange', collapseToolsForSelection)
+  }, [document.id])
+
+  useEffect(() => {
+    if (!Capacitor.isNativePlatform()) return undefined
+    const selectionActionsEnabled = document.fileType === 'markdown' && readerMode === 'rendered' && !searchOpen
+    void FastViewerFiles.setSelectionActionsEnabled({ enabled: selectionActionsEnabled })
+
+    const handleNativeSelectionActionEvent = (event: Event) => {
+      const action = (event as CustomEvent<{ action?: NativeSelectionAction }>).detail?.action
+      if (action !== 'highlight' && action !== 'note' && action !== 'card') return
+      handleNativeSelectionAction(action)
+    }
+    window.addEventListener('lightpage:native-selection-action', handleNativeSelectionActionEvent)
+    return () => {
+      window.removeEventListener('lightpage:native-selection-action', handleNativeSelectionActionEvent)
+      void FastViewerFiles.setSelectionActionsEnabled({ enabled: false })
+    }
+  }, [document.fileType, handleNativeSelectionAction, readerMode, searchOpen])
+
+  const toggleEdgeDirectory = () => {
+    setReaderToolsOpen(false)
+    setSelectionAction(null)
+    setMenuOpen(false)
+    if (window.innerWidth >= 840) {
+      setTocOpen(false)
+      setDesktopTocOpen((open) => !open)
+      return
+    }
+    setTocOpen((open) => !open)
+  }
+
+  const handleReaderToolbarPointerDown = (event: React.PointerEvent<HTMLButtonElement>) => {
+    if (event.button !== 0) return
+    event.stopPropagation()
+    readerToolbarDragRef.current = {
+      active: true,
+      moved: false,
+      suppressClick: false,
+      pointerId: event.pointerId,
       startY: event.clientY,
-      lastX: event.clientX,
-      lastY: event.clientY,
+      lastRatio: readerToolbarY ?? 0.9,
+    }
+    try {
+      event.currentTarget.setPointerCapture(event.pointerId)
+    } catch {
+      // 指针仍会通过普通 pointer 事件完成点击。
     }
   }
 
-  const handleEdgePointerMove = (event: React.PointerEvent<HTMLElement>) => {
-    if (!edgeSwipeRef.current.active) return
-    edgeSwipeRef.current.lastX = event.clientX
-    edgeSwipeRef.current.lastY = event.clientY
+  const handleReaderToolbarPointerMove = (event: React.PointerEvent<HTMLButtonElement>) => {
+    const drag = readerToolbarDragRef.current
+    if (!drag.active || drag.pointerId !== event.pointerId) return
+    if (!drag.moved && Math.abs(event.clientY - drag.startY) < 6) return
+    event.stopPropagation()
+    drag.moved = true
+    drag.suppressClick = true
+    const viewportHeight = Math.max(320, window.visualViewport?.height ?? window.innerHeight)
+    const menuHeight = Math.min(340, Math.max(160, viewportHeight - 180))
+    const minRatio = clamp((menuHeight + 86) / viewportHeight, 0.46, 0.82)
+    const minBottom = isDesktop ? 18 : 82
+    const maxRatio = 1 - minBottom / viewportHeight
+    const ratio = clamp((event.clientY + 26) / viewportHeight, minRatio, maxRatio)
+    drag.lastRatio = ratio
+    setReaderToolbarY(ratio)
   }
 
-  const handleEdgePointerUp = () => {
-    const swipe = edgeSwipeRef.current
-    if (!swipe.active) return
-
-    const deltaX = swipe.lastX - swipe.startX
-    const deltaY = Math.abs(swipe.lastY - swipe.startY)
-    edgeSwipeRef.current.active = false
-
-    if (deltaX >= 76 && deltaY <= 54) {
-      if (closeTopReaderLayer()) return
-      onBack()
+  const finishReaderToolbarDrag = (event: React.PointerEvent<HTMLButtonElement>) => {
+    const drag = readerToolbarDragRef.current
+    if (!drag.active || drag.pointerId !== event.pointerId) return
+    event.stopPropagation()
+    drag.active = false
+    drag.pointerId = null
+    try {
+      if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+        event.currentTarget.releasePointerCapture(event.pointerId)
+      }
+    } catch {
+      // 指针已释放。
     }
+    if (drag.moved) {
+      onSetSettings({ ...settings, readerToolbarY: drag.lastRatio })
+    }
+  }
+
+  const resetReaderToolbarPosition = () => {
+    readerToolbarDragRef.current.suppressClick = true
+    setReaderToolbarY(null)
+    onSetSettings({ ...settings, readerToolbarY: null })
+    onShowToast('阅读工具位置已恢复', 'success')
+  }
+
+  const isReaderMarginTarget = (target: EventTarget | null) => {
+    if (!(target instanceof HTMLElement)) return false
+    return target === scrollRef.current
+      || target.classList.contains('reader-document-pane')
+      || target.classList.contains('reader-content')
+  }
+
+  const handleReaderTap = (event: React.MouseEvent<HTMLElement>) => {
+    if (!settings.immersiveTap || !isReaderMarginTarget(event.target)) return
+    if (!window.getSelection()?.isCollapsed) return
+    setImmersive((value) => !value)
+  }
+
+  const handleReaderDoubleTap = (event: React.MouseEvent<HTMLElement>) => {
+    if (!settings.doubleTapReset || !isReaderMarginTarget(event.target)) return
+    onSetSettings({
+      ...settings,
+      fontSizeLevel: 2,
+      lineHeightLevel: 1,
+      contentWidthLevel: 1,
+      codeSizeLevel: 1,
+    })
+    onShowToast('已恢复默认阅读排版', 'success')
   }
 
   const switchEncoding = (encoding: EncodingLabel) => {
@@ -1790,17 +2539,18 @@ function ReaderPage({
   }
 
   const jumpToHeading = (heading: HeadingItem, closeMobileDirectory: boolean) => {
+    setActiveHeadingId(heading.id)
+    onUpdate({ lastReadHeadingId: heading.id })
     try {
-      if (document.fileType === 'html') {
-        iframeRef.current?.contentDocument?.getElementById(heading.id)?.scrollIntoView({ block: 'start' })
-      } else {
-        window.document.getElementById(heading.id)?.scrollIntoView({ block: 'start' })
+      const scroll = () => {
+        if (document.fileType === 'html') iframeRef.current?.contentDocument?.getElementById(heading.id)?.scrollIntoView({ block: 'start' })
+        else window.document.getElementById(heading.id)?.scrollIntoView({ block: 'start' })
       }
+      scroll()
+      window.setTimeout(scroll, 60)
     } catch {
       onShowToast('脚本隔离模式下无法定位目录，请暂时关闭脚本权限', 'warning')
     }
-    setActiveHeadingId(heading.id)
-    onUpdate({ lastReadHeadingId: heading.id })
     if (closeMobileDirectory) setTocOpen(false)
   }
 
@@ -1855,6 +2605,16 @@ function ReaderPage({
         }}
       />
       <MenuAction icon={<Copy size={18} />} label="复制全文" onClick={() => { setMenuOpen(false); void copyText() }} />
+      {document.fileType === 'markdown' && (
+        <>
+          <MenuAction icon={<Bookmark size={18} />} label="添加章节书签" onClick={() => { setMenuOpen(false); void addBookmark() }} />
+          <MenuAction icon={<MessageSquare size={18} />} label={`批注与书签（${annotations.length}）`} onClick={() => { setMenuOpen(false); setAnnotationsOpen(true) }} />
+          <MenuAction icon={<Upload size={18} />} label="导出批注摘要" onClick={() => { setMenuOpen(false); void exportAnnotations() }} />
+        </>
+      )}
+      {packageDocuments.length > 0 && (
+        <MenuAction icon={<Archive size={18} />} label="文档包目录" onClick={() => { setMenuOpen(false); setPackageOpen(true) }} />
+      )}
       {document.fileType === 'html' && (
         <MenuAction
           icon={<ShieldCheck size={18} />}
@@ -1884,19 +2644,36 @@ function ReaderPage({
     </div>
   )
 
+  const handleDesktopTocWheel = (event: React.WheelEvent<HTMLElement>) => {
+    event.preventDefault()
+    event.stopPropagation()
+    const scroller = event.currentTarget.querySelector<HTMLElement>('.desktop-toc-content')
+    if (scroller) scroller.scrollTop += event.deltaY
+  }
+
   return (
     <section
-      className={`page page-reader document-${document.fileType}${desktopTocOpen ? '' : ' desktop-toc-collapsed'} font-level-${settings.fontSizeLevel} line-level-${settings.lineHeightLevel} width-level-${settings.contentWidthLevel} code-level-${settings.codeSizeLevel}`}
+      className={`page page-reader document-${document.fileType}${desktopTocOpen ? '' : ' desktop-toc-collapsed'}${immersive ? ' immersive' : ''}${settings.rightEdgeToc && !isDesktop ? ' edge-toc-enabled' : ''} font-level-${settings.fontSizeLevel} line-level-${settings.lineHeightLevel} width-level-${settings.contentWidthLevel} code-level-${settings.codeSizeLevel}`}
       aria-label="文件阅读页"
       ref={scrollRef}
       onScroll={scheduleReadPositionSave}
-      onPointerDown={handleEdgePointerDown}
-      onPointerMove={handleEdgePointerMove}
-      onPointerUp={handleEdgePointerUp}
-      onPointerCancel={() => {
-        edgeSwipeRef.current.active = false
-      }}
+      onPointerUp={() => window.setTimeout(captureReaderSelection)}
+      onClick={handleReaderTap}
+      onDoubleClick={handleReaderDoubleTap}
     >
+      {settings.rightEdgeToc && !isDesktop && (
+        <button
+          type="button"
+          className={`toc-edge-trigger${(window.innerWidth >= 840 ? desktopTocOpen : tocOpen) ? ' active' : ''}`}
+          aria-label={(window.innerWidth >= 840 ? desktopTocOpen : tocOpen) ? '隐藏目录' : '显示目录'}
+          aria-expanded={window.innerWidth >= 840 ? desktopTocOpen : tocOpen}
+          title={(window.innerWidth >= 840 ? desktopTocOpen : tocOpen) ? '隐藏目录' : '显示目录'}
+          onClick={(event) => {
+            event.stopPropagation()
+            toggleEdgeDirectory()
+          }}
+        />
+      )}
       <header className="reader-header">
         <button className="icon-button" type="button" onClick={onBack} aria-label="返回">
           <ChevronLeft size={22} />
@@ -1993,7 +2770,15 @@ function ReaderPage({
         </div>
       )}
 
-      <aside className="desktop-toc desktop-only" aria-label="章节目录">
+      <aside
+        className="desktop-toc desktop-only"
+        aria-label="章节目录"
+        onWheel={handleDesktopTocWheel}
+        onPointerDown={(event) => event.stopPropagation()}
+        onPointerMove={(event) => event.stopPropagation()}
+        onPointerUp={(event) => event.stopPropagation()}
+        onPointerCancel={(event) => event.stopPropagation()}
+      >
         <header className="desktop-toc-header">
           <div>
             <span>章节</span>
@@ -2003,7 +2788,7 @@ function ReaderPage({
             <X size={17} />
           </button>
         </header>
-        <div className="desktop-toc-content">
+        <div className="desktop-toc-content" role="region" aria-label="可滚动章节列表" tabIndex={0}>
           {renderTableOfContents(false)}
         </div>
       </aside>
@@ -2099,6 +2884,10 @@ function ReaderPage({
               contentRef={contentRef}
               themeMode={resolvedTheme}
               onOpenExternalLink={handleOpenExternalLink}
+              searchQuery={debouncedQuery}
+              forceHeadingId={activeHeadingId}
+              onPlanReady={handleRenderPlanReady}
+              onRenderChange={handleRenderChange}
             />
           </Suspense>
         </RenderErrorBoundary>
@@ -2108,35 +2897,77 @@ function ReaderPage({
 
       </div>
 
-      <div className={`reader-toolbar${readerToolsOpen ? ' open' : ''}`} aria-label="阅读工具">
-        <div className="reader-tool-menu" aria-hidden={!readerToolsOpen}>
-          <button type="button" onClick={toggleTheme} tabIndex={readerToolsOpen ? 0 : -1}>
+      <div
+        className={`reader-toolbar${readerToolsOpen ? ' open' : ''}`}
+        aria-label="阅读工具"
+        style={readerToolbarY === null ? undefined : { bottom: `${(1 - readerToolbarY) * 100}svh` }}
+      >
+        {readerToolsOpen && <div className="reader-tool-menu">
+          <button type="button" onClick={toggleTheme}>
             {resolvedTheme === 'light' ? <Sun size={18} /> : <Moon size={18} />}
             <span>{themePreferenceLabel(settings.themeMode)}</span>
           </button>
-          <button type="button" onClick={() => changeFontSize(-1)} tabIndex={readerToolsOpen ? 0 : -1}>
+          <button type="button" onClick={() => changeFontSize(-1)}>
             <SlidersHorizontal size={18} />
             <span>A-</span>
           </button>
-          <button type="button" onClick={() => changeFontSize(1)} tabIndex={readerToolsOpen ? 0 : -1}>
+          <button type="button" onClick={() => changeFontSize(1)}>
             <SlidersHorizontal size={18} />
             <span>A+</span>
           </button>
-          <button type="button" onClick={copyText} tabIndex={readerToolsOpen ? 0 : -1}>
+          <button type="button" onClick={copyText}>
             <Copy size={18} />
             <span>复制</span>
           </button>
-        </div>
+          <button type="button" onClick={() => scrollRef.current?.scrollBy({ top: -scrollRef.current.clientHeight * 0.86, behavior: 'smooth' })}>
+            <ChevronUp size={18} />
+            <span>上一页</span>
+          </button>
+          <button type="button" onClick={() => scrollRef.current?.scrollBy({ top: scrollRef.current.clientHeight * 0.86, behavior: 'smooth' })}>
+            <ChevronDown size={18} />
+            <span>下一页</span>
+          </button>
+        </div>}
         <button
           className="reader-tool-toggle"
           type="button"
-          onClick={() => setReaderToolsOpen((open) => !open)}
+          onPointerDown={handleReaderToolbarPointerDown}
+          onPointerMove={handleReaderToolbarPointerMove}
+          onPointerUp={finishReaderToolbarDrag}
+          onPointerCancel={(event) => {
+            finishReaderToolbarDrag(event)
+            window.setTimeout(() => { readerToolbarDragRef.current.suppressClick = false })
+          }}
+          onClick={() => {
+            if (readerToolbarDragRef.current.suppressClick) {
+              readerToolbarDragRef.current.suppressClick = false
+              return
+            }
+            setReaderToolsOpen((open) => !open)
+          }}
+          onDoubleClick={resetReaderToolbarPosition}
           aria-expanded={readerToolsOpen}
           aria-label={readerToolsOpen ? '收起阅读工具' : '展开阅读工具'}
+          title="拖动可调整位置，双击恢复默认位置"
         >
           {readerToolsOpen ? <X size={20} /> : <SlidersHorizontal size={20} />}
         </button>
       </div>
+
+      {!Capacitor.isNativePlatform() && selectionAction && (
+        <div
+          className="selection-actions"
+          role="toolbar"
+          aria-label="所选文字操作"
+          style={{ left: selectionAction.x, top: selectionAction.y }}
+          onPointerDown={(event) => event.preventDefault()}
+        >
+          <button type="button" onClick={() => { void saveSelectionAnnotation('highlight') }}><Highlighter size={16} />高亮</button>
+          <button type="button" onClick={() => { void saveSelectionAnnotation('note') }}><MessageSquare size={16} />批注</button>
+          <button type="button" onClick={() => { setShareCardText(selectionAction.anchor.exact); setSelectionAction(null); window.getSelection()?.removeAllRanges() }}><Share2 size={16} />卡片</button>
+          <button type="button" onClick={() => setSelectionAction(null)} aria-label="关闭"><X size={15} /></button>
+        </div>
+      )}
 
       {tocOpen && (
         <div className="mobile-only mobile-directory-sheet">
@@ -2144,6 +2975,104 @@ function ReaderPage({
             {renderTableOfContents(true)}
           </Sheet>
         </div>
+      )}
+      {packageOpen && (
+        <Sheet title={`文档包 · ${document.packageName ?? '目录'}`} onClose={() => setPackageOpen(false)}>
+          <div className="toc-list package-entry-list">
+            {packageDocuments.map((item, index) => (
+              <button
+                key={item.id}
+                className={`toc-item${item.id === document.id ? ' active' : ''}`}
+                type="button"
+                onClick={() => {
+                  setPackageOpen(false)
+                  onOpenPackageDocument(item)
+                }}
+              >
+                {index + 1}. {item.archiveRelativePath ?? item.fileName}{item.isFavorite ? ' ★' : ''}
+              </button>
+            ))}
+          </div>
+          <div className="package-navigation">
+            <button
+              type="button"
+              disabled={packageDocuments.findIndex((item) => item.id === document.id) <= 0}
+              onClick={() => {
+                const index = packageDocuments.findIndex((item) => item.id === document.id)
+                if (index > 0) onOpenPackageDocument(packageDocuments[index - 1])
+              }}
+            >上一篇</button>
+            <button
+              type="button"
+              disabled={packageDocuments.findIndex((item) => item.id === document.id) >= packageDocuments.length - 1}
+              onClick={() => {
+                const index = packageDocuments.findIndex((item) => item.id === document.id)
+                if (index >= 0 && index < packageDocuments.length - 1) onOpenPackageDocument(packageDocuments[index + 1])
+              }}
+            >下一篇</button>
+          </div>
+        </Sheet>
+      )}
+
+      {annotationsOpen && (
+        <Sheet title="批注与书签" onClose={() => setAnnotationsOpen(false)}>
+          {annotations.length === 0 ? (
+            <p className="sheet-description">长按选择 Markdown 文字即可高亮或添加批注，也可以从文件菜单添加章节书签。</p>
+          ) : (
+            <div className="annotation-list">
+              {[...annotations].sort((left, right) => left.anchor.start - right.anchor.start).map((item) => (
+                <article className={`annotation-item${item.status === 'orphaned' ? ' orphaned' : ''}`} key={item.id}>
+                  <button type="button" className="annotation-main" onClick={() => jumpToAnnotation(item)}>
+                    <strong>{item.kind === 'bookmark' ? '书签' : item.kind === 'note' ? '批注' : '高亮'}{item.status === 'orphaned' ? ' · 待重新关联' : ''}</strong>
+                    <span>{item.anchor.exact || item.anchor.headingId || '当前位置'}</span>
+                    {item.note && <small>{item.note}</small>}
+                  </button>
+                  {item.anchor.exact && <button type="button" className="annotation-card" onClick={() => setShareCardText(item.anchor.exact)} aria-label="生成阅读卡片"><Share2 size={16} /></button>}
+                  {item.kind === 'note' && <button type="button" className="annotation-card" onClick={() => { void editAnnotation(item) }} aria-label="编辑批注"><MessageSquare size={16} /></button>}
+                  <button type="button" className="annotation-delete" onClick={() => { void removeAnnotation(item.id) }} aria-label="删除批注"><X size={16} /></button>
+                </article>
+              ))}
+            </div>
+          )}
+          {annotations.length > 0 && <button className="primary-action compact" type="button" onClick={() => { void exportAnnotations() }}>分享批注摘要</button>}
+        </Sheet>
+      )}
+
+      {shareCardText !== null && (
+        <Sheet title="生成阅读卡片" onClose={() => setShareCardText(null)}>
+          <div className="share-card-settings">
+            <div className="share-card-template-tabs" aria-label="卡片模板">
+              {([['simple', '简洁'], ['dark', '深色'], ['accent', '强调']] as const).map(([value, label]) => (
+                <button key={value} type="button" className={shareCardTemplate === value ? 'active' : ''} onClick={() => setShareCardTemplate(value)}>{label}</button>
+              ))}
+            </div>
+            <textarea value={shareCardText} maxLength={5000} onChange={(event) => setShareCardText(event.target.value)} aria-label="卡片正文" />
+            <input value={shareCardSourceUrl} onChange={(event) => {
+              const value = event.target.value
+              setShareCardSourceUrl(value)
+              if (!/^https?:\/\/[^\s]+$/i.test(value.trim())) setShareCardQrEnabled(false)
+            }} placeholder="可选来源链接（https://…）" aria-label="卡片来源链接" />
+            <label className="share-card-qr-toggle">
+              <input type="checkbox" checked={shareCardQrEnabled} disabled={!validShareCardUrl} onChange={(event) => setShareCardQrEnabled(event.target.checked)} />
+              在卡片中显示来源二维码
+            </label>
+          </div>
+          <div className="share-card-preview" ref={shareCardContainerRef}>
+            {shareCardPages.map((page, index) => (
+              <article className={`share-card-page template-${shareCardTemplate}`} key={`${page.sourceIndex}-${page.text.slice(0, 12)}`}>
+                {shareCardPages.length > 1 && <button type="button" className="share-card-remove" onClick={() => setRemovedShareCardPages((items) => [...items, page.sourceIndex])} aria-label="删除此页"><X size={16} /></button>}
+                <span className="share-card-brand">LIGHTPAGE · 轻页</span>
+                <blockquote>{page.text}</blockquote>
+                <footer>
+                  <div><strong>{document.fileName}</strong>{shareCardSourceUrl && <small>{shareCardSourceUrl}</small>}</div>
+                  {shareCardQrDataUrl && <img src={shareCardQrDataUrl} alt="来源二维码" />}
+                </footer>
+                {shareCardPages.length > 1 && <span className="share-card-page-number">{index + 1}/{shareCardPages.length}</span>}
+              </article>
+            ))}
+          </div>
+          <button className="primary-action compact" type="button" disabled={exporting || !shareCardText.trim()} onClick={() => { void exportShareCards() }}>{exporting ? '生成中…' : `生成并分享 ${shareCardPages.length} 张卡片`}</button>
+        </Sheet>
       )}
 
       {menuOpen && (
@@ -2693,6 +3622,43 @@ function sortDocuments(items: DocumentRecord[]) {
   )
 }
 
+function comparePackageDocuments(left: DocumentRecord, right: DocumentRecord) {
+  const leftPath = (left.archiveRelativePath ?? left.fileName).replace(/\\/g, '/')
+  const rightPath = (right.archiveRelativePath ?? right.fileName).replace(/\\/g, '/')
+  const priority = (path: string) => {
+    const name = path.split('/').pop()?.toLowerCase() ?? path.toLowerCase()
+    if (name === 'readme.md' || name === 'readme.markdown') return 0
+    if (name === 'index.md' || name === 'index.markdown' || name === 'index.html' || name === 'index.htm') return 1
+    return 2
+  }
+  return priority(leftPath) - priority(rightPath)
+    || leftPath.localeCompare(rightPath, undefined, { numeric: true, sensitivity: 'base' })
+}
+
+function collapsePackageDocuments(items: DocumentRecord[]) {
+  const packages = new Map<string, DocumentRecord[]>()
+  const standalone: DocumentRecord[] = []
+  items.forEach((item) => {
+    if (!item.packageId) {
+      standalone.push(item)
+      return
+    }
+    const entries = packages.get(item.packageId) ?? []
+    entries.push(item)
+    packages.set(item.packageId, entries)
+  })
+  const collapsed = Array.from(packages.values()).map((entries) => {
+    const representative = [...entries].sort((left, right) => right.lastOpenedAt.localeCompare(left.lastOpenedAt))[0]
+    return {
+      ...representative,
+      fileSize: entries.reduce((total, item) => total + item.fileSize, 0),
+      isFavorite: entries.some((item) => item.isFavorite),
+      inLibrary: entries.some((item) => item.inLibrary),
+    }
+  })
+  return [...standalone, ...collapsed]
+}
+
 function getExtension(fileName: string) {
   return fileName.includes('.') ? fileName.split('.').pop()?.toLowerCase() ?? '' : ''
 }
@@ -3106,6 +4072,22 @@ function formatTime(value: string) {
 
 function clamp(value: number, min: number, max: number) {
   return Math.min(max, Math.max(min, value))
+}
+
+function splitShareCardText(value: string, maxLength: number) {
+  const text = value.trim()
+  if (!text) return []
+  const pages: string[] = []
+  let remaining = text
+  while (remaining.length > maxLength) {
+    const sample = remaining.slice(0, maxLength + 1)
+    const boundary = Math.max(sample.lastIndexOf('\n'), sample.lastIndexOf('。'), sample.lastIndexOf('；'), sample.lastIndexOf(' '))
+    const end = boundary >= Math.floor(maxLength * 0.55) ? boundary + 1 : maxLength
+    pages.push(remaining.slice(0, end).trim())
+    remaining = remaining.slice(end).trim()
+  }
+  if (remaining) pages.push(remaining)
+  return pages
 }
 
 export default App
