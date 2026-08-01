@@ -28,6 +28,25 @@ test('粘贴 HTML 会显示安全预览并在严格沙盒打开', async ({ page 
   await expect(frame.locator('body')).not.toHaveAttribute('data-bad', '1')
 })
 
+test('手机端脚本隔离 HTML 会铺满到底部导航，不再保留遮挡空白', async ({ page }) => {
+  await page.locator('input[type="file"]').setInputFiles({
+    name: '隔离页面.html',
+    mimeType: 'text/html',
+    buffer: Buffer.from('<!doctype html><h1>隔离页面</h1><script>document.body.dataset.ready="1"</script>'),
+  })
+  await page.evaluate(() => { document.documentElement.dataset.runtime = 'native' })
+  await page.getByRole('button', { name: '打开 HTML 权限设置' }).click()
+  const permissions = page.locator('.sheet').filter({ hasText: 'HTML 权限' })
+  await permissions.getByRole('switch', { name: /运行脚本/ }).click()
+  await permissions.getByRole('button', { name: '关闭' }).click()
+
+  await expect.poll(async () => page.evaluate(() => {
+    const frameBottom = document.querySelector('.html-frame')?.getBoundingClientRect().bottom ?? 0
+    const navigationTop = document.querySelector('.bottom-nav')?.getBoundingClientRect().top ?? 0
+    return Math.abs(frameBottom - navigationTop)
+  })).toBeLessThanOrEqual(2)
+})
+
 test('设置页可切换系统主题和阅读排版', async ({ page }) => {
   await page.getByRole('button', { name: '设置' }).click()
   await expect(page.getByRole('heading', { name: '设置' })).toBeVisible()

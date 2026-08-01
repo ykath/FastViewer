@@ -987,6 +987,16 @@ html[data-runtime='desktop'] .mermaid-svg {
   background: var(--accent-soft);
 }
 
+.mermaid-zoom-actions button:disabled {
+  cursor: wait;
+  opacity: 0.68;
+}
+
+.mermaid-zoom-actions button.success {
+  color: var(--success-text);
+  background: var(--success-bg);
+}
+
 .mermaid-zoom-actions output {
   min-width: 54px;
   color: var(--text-muted);
@@ -1042,6 +1052,10 @@ html[data-runtime='desktop'] .mermaid-svg {
   color: rgba(255, 255, 255, 0.74);
   text-align: center;
   font-size: 12px;
+}
+
+.mermaid-zoom-help.error {
+  color: #ffb4a9;
 }
 
 .mermaid-error {
@@ -2137,8 +2151,8 @@ mark.search-hit.active {
 }
 
 .html-frame.isolated {
-  min-height: 68vh;
-  max-height: 78vh;
+  min-height: 240px;
+  max-height: none;
 }
 
 .sheet-description.muted {

@@ -1,9 +1,10 @@
-import { Maximize2, Minus, Plus, X } from 'lucide-react'
-import { useEffect, useId, useMemo, useRef, useState } from 'react'
+import { Check, Copy, Maximize2, Minus, Plus, X } from 'lucide-react'
+import { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react'
 import type React from 'react'
 import { createPortal } from 'react-dom'
 import type { MermaidConfig, RenderResult } from 'mermaid'
 import type { ThemeMode } from './reader-settings'
+import { readSvgDimensions } from './mermaid-image'
 
 type MermaidDiagramProps = {
   source: string
@@ -145,12 +146,36 @@ function MermaidZoomViewer({ svg, onClose }: { svg: string; onClose: () => void 
   const [scale, setScale] = useState(1)
   const [offset, setOffset] = useState({ x: 0, y: 0 })
   const [dragging, setDragging] = useState(false)
+  const [copyState, setCopyState] = useState<'idle' | 'copying' | 'copied' | 'error'>('idle')
+  const [copyError, setCopyError] = useState('')
   const closeButtonRef = useRef<HTMLButtonElement>(null)
   const dragRef = useRef({ active: false, pointerId: -1, startX: 0, startY: 0, originX: 0, originY: 0 })
   const fitSize = useMemo(
     () => fitSvgIntoViewport(aspectRatio, viewport.width, viewport.height),
     [aspectRatio, viewport.height, viewport.width],
   )
+
+  const copyDiagramImage = useCallback(async () => {
+    if (copyState === 'copying') return
+    setCopyState('copying')
+    setCopyError('')
+    try {
+      if (!navigator.clipboard?.write || typeof ClipboardItem === 'undefined') {
+        throw new Error('当前系统不支持复制图像')
+      }
+      const background = getComputedStyle(document.documentElement)
+        .getPropertyValue('--surface-muted')
+        .trim() || '#ffffff'
+      const png = await renderSvgToPngBlob(viewerSvg, background)
+      await navigator.clipboard.write([new ClipboardItem({ 'image/png': png })])
+      setCopyState('copied')
+      window.setTimeout(() => setCopyState('idle'), 1800)
+    } catch (error) {
+      setCopyError(error instanceof Error ? error.message : '未知错误')
+      setCopyState('error')
+      window.setTimeout(() => setCopyState('idle'), 2400)
+    }
+  }, [copyState, viewerSvg])
 
   useEffect(() => {
     closeButtonRef.current?.focus()
@@ -159,6 +184,12 @@ function MermaidZoomViewer({ svg, onClose }: { svg: string; onClose: () => void 
         event.preventDefault()
         event.stopImmediatePropagation()
         onClose()
+        return
+      }
+      if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'c') {
+        event.preventDefault()
+        event.stopImmediatePropagation()
+        void copyDiagramImage()
         return
       }
       if ((event.key === '+' || event.key === '=') && !event.ctrlKey && !event.metaKey) {
@@ -172,7 +203,7 @@ function MermaidZoomViewer({ svg, onClose }: { svg: string; onClose: () => void 
     }
     window.addEventListener('keydown', handleKeyDown, true)
     return () => window.removeEventListener('keydown', handleKeyDown, true)
-  }, [onClose])
+  }, [copyDiagramImage, onClose])
 
   useEffect(() => {
     const handleResize = () => setViewport({ width: window.innerWidth, height: window.innerHeight })
@@ -211,6 +242,16 @@ function MermaidZoomViewer({ svg, onClose }: { svg: string; onClose: () => void 
           <output aria-label="当前缩放比例">{Math.round(scale * 100)}%</output>
           <button type="button" onClick={() => setScale((value) => clampScale(value + 0.25))} aria-label="放大流程图"><Plus size={17} /></button>
           <button type="button" onClick={resetView}><Maximize2 size={16} />适应窗口</button>
+          <button
+            type="button"
+            className={copyState === 'copied' ? 'success' : ''}
+            disabled={copyState === 'copying'}
+            onClick={() => { void copyDiagramImage() }}
+            aria-label="复制流程图图像"
+          >
+            {copyState === 'copied' ? <Check size={16} /> : <Copy size={16} />}
+            {copyState === 'copying' ? '复制中...' : copyState === 'copied' ? '已复制' : '复制图像'}
+          </button>
           <button ref={closeButtonRef} type="button" onClick={onClose} aria-label="关闭流程图查看器"><X size={18} /></button>
         </div>
       </header>
@@ -255,9 +296,92 @@ function MermaidZoomViewer({ svg, onClose }: { svg: string; onClose: () => void 
           dangerouslySetInnerHTML={{ __html: viewerSvg }}
         />
       </div>
-      <p className="mermaid-zoom-help">滚轮缩放 · 拖动平移 · Esc 关闭</p>
+      <p className={`mermaid-zoom-help${copyState === 'error' ? ' error' : ''}`}>
+        {copyState === 'error' ? `复制失败：${copyError || '请检查 Windows 剪贴板权限后重试'}` : '滚轮缩放 · 拖动平移 · Ctrl+C 复制图像 · Esc 关闭'}
+      </p>
     </div>
   )
+}
+
+async function renderSvgToPngBlob(svg: string, background: string) {
+  const parser = new DOMParser()
+  const svgDocument = parser.parseFromString(svg, 'image/svg+xml')
+  const root = svgDocument.documentElement
+  if (root.nodeName.toLowerCase() === 'parsererror') throw new Error('无法解析流程图图像')
+  replaceForeignObjectLabels(svgDocument)
+
+  const { width, height } = readSvgDimensions(svg)
+  const maxDimensionScale = 4096 / Math.max(width, height)
+  const maxPixelScale = Math.sqrt(12_000_000 / (width * height))
+  const scale = Math.max(0.1, Math.min(2, maxDimensionScale, maxPixelScale))
+  const outputWidth = Math.max(1, Math.round(width * scale))
+  const outputHeight = Math.max(1, Math.round(height * scale))
+  root.setAttribute('xmlns', 'http://www.w3.org/2000/svg')
+  root.setAttribute('width', String(outputWidth))
+  root.setAttribute('height', String(outputHeight))
+
+  const serialized = new XMLSerializer().serializeToString(root)
+  const objectUrl = URL.createObjectURL(new Blob([serialized], { type: 'image/svg+xml;charset=utf-8' }))
+  try {
+    const image = await loadClipboardImage(objectUrl)
+    const canvas = document.createElement('canvas')
+    canvas.width = outputWidth
+    canvas.height = outputHeight
+    const context = canvas.getContext('2d')
+    if (!context) throw new Error('无法创建图像画布')
+    context.fillStyle = background
+    context.fillRect(0, 0, outputWidth, outputHeight)
+    context.drawImage(image, 0, 0, outputWidth, outputHeight)
+    return await new Promise<Blob>((resolve, reject) => {
+      canvas.toBlob((blob) => {
+        if (blob) resolve(blob)
+        else reject(new Error('无法生成 PNG 图像'))
+      }, 'image/png')
+    })
+  } finally {
+    URL.revokeObjectURL(objectUrl)
+  }
+}
+
+function replaceForeignObjectLabels(svgDocument: Document) {
+  const svgNamespace = 'http://www.w3.org/2000/svg'
+  svgDocument.querySelectorAll('foreignObject').forEach((foreignObject) => {
+    const width = Number.parseFloat(foreignObject.getAttribute('width') ?? '0')
+    const height = Number.parseFloat(foreignObject.getAttribute('height') ?? '0')
+    const x = Number.parseFloat(foreignObject.getAttribute('x') ?? '0')
+    const y = Number.parseFloat(foreignObject.getAttribute('y') ?? '0')
+    const paragraphs = Array.from(foreignObject.querySelectorAll('p'))
+      .map((paragraph) => paragraph.textContent?.trim() ?? '')
+      .filter(Boolean)
+    const lines = paragraphs.length > 0
+      ? paragraphs
+      : [foreignObject.textContent?.trim() ?? ''].filter(Boolean)
+    const text = svgDocument.createElementNS(svgNamespace, 'text')
+    text.setAttribute('x', String(x + width / 2))
+    text.setAttribute('y', String(y + height / 2))
+    text.setAttribute('text-anchor', 'middle')
+    text.setAttribute('dominant-baseline', 'middle')
+    text.setAttribute('font-family', '"Microsoft YaHei", "Segoe UI", sans-serif')
+    text.setAttribute('font-size', '16')
+    lines.forEach((line, index) => {
+      const tspan = svgDocument.createElementNS(svgNamespace, 'tspan')
+      tspan.setAttribute('x', String(x + width / 2))
+      tspan.setAttribute('dy', index === 0 ? `${-(lines.length - 1) * 0.6}em` : '1.2em')
+      tspan.textContent = line
+      text.appendChild(tspan)
+    })
+    foreignObject.replaceWith(text)
+  })
+}
+
+function loadClipboardImage(source: string) {
+  return new Promise<HTMLImageElement>((resolve, reject) => {
+    const image = new Image()
+    image.crossOrigin = 'anonymous'
+    image.onload = () => resolve(image)
+    image.onerror = () => reject(new Error('无法加载流程图图像'))
+    image.src = source
+  })
 }
 
 function clampScale(value: number) {
@@ -265,15 +389,8 @@ function clampScale(value: number) {
 }
 
 function readSvgAspectRatio(svg: string) {
-  const viewBox = svg.match(/\bviewBox\s*=\s*["']([^"']+)["']/i)?.[1]
-  const values = viewBox?.trim().split(/[\s,]+/).map(Number)
-  if (values?.length === 4 && values.every(Number.isFinite) && values[2] > 0 && values[3] > 0) {
-    return values[2] / values[3]
-  }
-
-  const width = Number.parseFloat(svg.match(/\bwidth\s*=\s*["']([\d.]+)/i)?.[1] ?? '')
-  const height = Number.parseFloat(svg.match(/\bheight\s*=\s*["']([\d.]+)/i)?.[1] ?? '')
-  return Number.isFinite(width) && Number.isFinite(height) && width > 0 && height > 0 ? width / height : 4 / 3
+  const { width, height } = readSvgDimensions(svg)
+  return width / height
 }
 
 function fitSvgIntoViewport(aspectRatio: number, viewportWidth: number, viewportHeight: number) {

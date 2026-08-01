@@ -67,6 +67,7 @@ describe('desktop platform adapter', () => {
     let listener: (() => void) | undefined
     const calls: string[] = []
     const pendingBatches: DesktopOpenRequest[][] = [
+      [],
       [{ path: 'a.md', fileName: 'a.md', size: 1, source: 'association' }],
       [{ path: 'b.md', fileName: 'b.md', size: 1, source: 'association' }],
     ]
@@ -88,6 +89,42 @@ describe('desktop platform adapter', () => {
     listener?.()
     await new Promise((resolve) => setTimeout(resolve, 0))
     expect(calls).toEqual(['a.md', 'b.md'])
+  })
+
+  it('subscribes before draining startup file association requests', async () => {
+    const order: string[] = []
+    const request = { path: 'startup.md', fileName: 'startup.md', size: 1, source: 'launch' } satisfies DesktopOpenRequest
+    const platform = createDesktopPlatform(createDependencies({
+      listen: vi.fn(async () => {
+        order.push('listen')
+        return () => undefined
+      }),
+      invoke: vi.fn(async (command) => {
+        if (command === 'take_pending_open_requests') {
+          order.push('drain')
+          return [request]
+        }
+        return null
+      }) as DesktopPlatformDependencies['invoke'],
+    }))
+
+    await platform.listenForOpenRequests(async (item) => { order.push(item.fileName) })
+    expect(order).toEqual(['listen', 'drain', 'startup.md'])
+  })
+
+  it('retries transient Windows file reads', async () => {
+    const readFile = vi.fn()
+      .mockRejectedValueOnce(new Error('temporarily locked'))
+      .mockResolvedValueOnce(new Uint8Array([4, 2]))
+    const platform = createDesktopPlatform(createDependencies({ readFile }))
+
+    await expect(platform.readDocument({
+      path: 'C:\\文档\\notes.md',
+      fileName: 'notes.md',
+      size: 2,
+      source: 'association',
+    })).resolves.toEqual(new Uint8Array([4, 2]))
+    expect(readFile).toHaveBeenCalledTimes(2)
   })
 
   it('does not write files when an export dialog is cancelled', async () => {

@@ -45,6 +45,7 @@ type UnlistenFn = () => void
 type RelativeResourcePaths = Record<string, string>
 
 const MAX_RELATIVE_IMAGES = 64
+const DOCUMENT_READ_RETRY_DELAYS_MS = [0, 80, 220] as const
 
 export type DesktopPlatformDependencies = {
   isTauri: () => boolean
@@ -170,8 +171,17 @@ export function createDesktopPlatform(dependencies: DesktopPlatformDependencies 
       return dependencies.listen<string>('workspace-files-changed', handler)
     },
 
-    readDocument(request: DesktopOpenRequest) {
-      return dependencies.readFile(request.path)
+    async readDocument(request: DesktopOpenRequest) {
+      let lastError: unknown
+      for (const delay of DOCUMENT_READ_RETRY_DELAYS_MS) {
+        if (delay > 0) await new Promise((resolve) => window.setTimeout(resolve, delay))
+        try {
+          return await dependencies.readFile(request.path)
+        } catch (error) {
+          lastError = error
+        }
+      }
+      throw lastError
     },
 
     async loadMarkdownResources(documentPath: string, content: string): Promise<Record<string, string>> {
@@ -241,14 +251,33 @@ export function createDesktopPlatform(dependencies: DesktopPlatformDependencies 
     async listenForOpenRequests(handler: (request: DesktopOpenRequest) => Promise<void> | void): Promise<UnlistenFn> {
       if (!isDesktop()) return () => undefined
       let chain = Promise.resolve()
-      return dependencies.listen<void>('desktop-open-requested', () => {
-        chain = chain.then(async () => {
-          const requests = await dependencies.invoke<DesktopOpenRequest[]>('take_pending_open_requests')
-          for (const request of requests) {
-            await handler(request)
-          }
-        }).catch(() => undefined)
-      })
+      let disposed = false
+      const drain = async () => {
+        if (disposed) return
+        const requests = await dependencies.invoke<DesktopOpenRequest[]>('take_pending_open_requests')
+        for (const request of requests) {
+          if (disposed) return
+          await handler(request)
+        }
+      }
+      const scheduleDrain = () => {
+        chain = chain.then(drain).catch(() => undefined)
+      }
+      const unlisten = await dependencies.listen<void>('desktop-open-requested', scheduleDrain)
+      // Register the event listener first, then consume startup requests. This
+      // closes the gap where Explorer could deliver a second file between the
+      // initial queue read and event subscription.
+      try {
+        await drain()
+      } catch (error) {
+        disposed = true
+        unlisten()
+        throw error
+      }
+      return () => {
+        disposed = true
+        unlisten()
+      }
     },
 
     async saveOriginal(bytes: Uint8Array, fileName: string): Promise<boolean> {

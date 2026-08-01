@@ -893,21 +893,20 @@ function App() {
   }, [documentsHydrated])
 
   useEffect(() => {
-    if (!isDesktop) return undefined
+    // Do not consume a launch/association request until IndexedDB hydration has
+    // finished. Otherwise the later hydration result can replace the document
+    // that was just opened from Explorer, making a successful double-click look
+    // like it was ignored.
+    if (!isDesktop || !documentsHydrated) return undefined
     let disposed = false
     let unlisten: (() => void) | undefined
 
-    void desktopPlatform.listenForOpenRequests(importDesktopRequest).then(async (removeListener) => {
+    void desktopPlatform.listenForOpenRequests(importDesktopRequest).then((removeListener) => {
       if (disposed) {
         removeListener()
         return
       }
       unlisten = removeListener
-      const pending = await desktopPlatform.takePendingOpenRequests()
-      for (const request of pending) {
-        if (disposed) break
-        await importDesktopRequest(request)
-      }
     }).catch((error) => {
       if (!disposed) showError('UNKNOWN', error instanceof Error ? error.message : 'Windows 文件关联初始化失败')
     })
@@ -918,7 +917,7 @@ function App() {
     }
     // The desktop bridge owns event serialization and is initialized once per app mount.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isDesktop])
+  }, [documentsHydrated, isDesktop])
 
   const handlePickedFile = async (file: File) => {
     const startedAt = startPerformanceSpan()
@@ -2819,22 +2818,49 @@ function ReaderPage({
   const handleHtmlFrameLoad = () => {
     const iframe = iframeRef.current
     if (!iframe) return
+    htmlResizeCleanupRef.current?.()
+
+    // Script-enabled HTML intentionally has an isolated origin, so its DOM is
+    // unavailable here. Size the outer iframe before attempting DOM access; this
+    // keeps the document viewport flush with the mobile navigation bar instead
+    // of falling back to the old 68-78vh box and leaving a large blank strip.
+    const resizeToVisibleBottom = () => {
+      const frameTop = Math.max(0, iframe.getBoundingClientRect().top)
+      const viewportBottom = window.document.documentElement.clientHeight
+      const navigationTop = window.document.querySelector<HTMLElement>('.bottom-nav')?.getBoundingClientRect().top
+      const isDesktopRuntime = window.document.documentElement.dataset.runtime === 'desktop'
+      const visibleBottom = !isDesktopRuntime && navigationTop && navigationTop > frameTop
+        ? Math.min(viewportBottom, navigationTop)
+        : viewportBottom
+      return Math.max(240, visibleBottom - frameTop)
+    }
+
     let frameDocument: Document | null = null
     try {
       frameDocument = iframe?.contentDocument ?? null
     } catch {
       // Script mode intentionally uses an isolated origin, so parent DOM access is unavailable.
     }
-    if (!frameDocument) return
+    if (!frameDocument) {
+      const resizeIsolatedFrame = () => {
+        iframe.style.height = `${resizeToVisibleBottom()}px`
+      }
+      resizeIsolatedFrame()
+      window.addEventListener('resize', resizeIsolatedFrame)
+      window.visualViewport?.addEventListener('resize', resizeIsolatedFrame)
+      htmlResizeCleanupRef.current = () => {
+        window.removeEventListener('resize', resizeIsolatedFrame)
+        window.visualViewport?.removeEventListener('resize', resizeIsolatedFrame)
+      }
+      return
+    }
 
-    htmlResizeCleanupRef.current?.()
     iframe.style.height = ''
 
     let resizeFrameId: number | null = null
     const resizeFrameNow = () => {
       resizeFrameId = null
-      const frameTop = Math.max(0, iframe.getBoundingClientRect().top)
-      const availableHeight = Math.max(0, window.document.documentElement.clientHeight - frameTop)
+      const availableHeight = resizeToVisibleBottom()
       const { height: contentHeight } = measureFrameDocument(frameDocument, iframe)
       const nextHeight = Math.max(contentHeight, availableHeight)
       if (Math.abs(iframe.getBoundingClientRect().height - nextHeight) > 1) {

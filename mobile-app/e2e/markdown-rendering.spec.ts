@@ -69,7 +69,8 @@ flowchart LR
   expect(dimensions.svgWidth).toBeLessThanOrEqual(dimensions.diagramClientWidth + 1)
 })
 
-test('Windows 可双击 Mermaid 并缩放、拖动和复位大图', async ({ page }) => {
+test('Windows 可双击 Mermaid，缩放、拖动、复位并复制大图', async ({ page, context }) => {
+  await context.grantPermissions(['clipboard-read', 'clipboard-write'])
   await page.goto('/')
   await page.locator('input[type="file"]').setInputFiles({
     name: '复杂流程图.md',
@@ -122,6 +123,9 @@ flowchart LR
     return Array.from(document.querySelectorAll('.mermaid-zoom-image svg[id], .mermaid-zoom-image svg [id]')).filter((element) => original.has(element.id)).length
   })
   expect(duplicateIds).toBe(0)
+
+  await viewer.getByRole('button', { name: '复制流程图图像' }).click()
+  await expect(viewer.getByRole('button', { name: '复制流程图图像' })).toContainText('已复制')
 
   await page.keyboard.press('Escape')
   await expect(viewer).toBeHidden()
