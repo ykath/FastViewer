@@ -69,6 +69,64 @@ flowchart LR
   expect(dimensions.svgWidth).toBeLessThanOrEqual(dimensions.diagramClientWidth + 1)
 })
 
+test('Windows 可双击 Mermaid 并缩放、拖动和复位大图', async ({ page }) => {
+  await page.goto('/')
+  await page.locator('input[type="file"]').setInputFiles({
+    name: '复杂流程图.md',
+    mimeType: 'text/markdown',
+    buffer: Buffer.from(`\`\`\`mermaid
+flowchart LR
+  A01[需求输入] --> A02[范围分析] --> A03[架构设计] --> A04[接口设计] --> A05[桌面开发] --> A06[资源处理] --> A07[集成测试] --> A08[性能测试] --> A09[安装验证] --> A10[灰度发布] --> A11[稳定发布]
+  A03 --> B01[复杂横向分支] --> B02[文档身份] --> B03[目录枚举] --> B04[文件监听] --> B05[索引更新] --> A07
+\`\`\``),
+  })
+  await page.evaluate(() => { document.documentElement.dataset.runtime = 'desktop' })
+  const diagram = page.locator('.mermaid-svg')
+  await expect(diagram.locator('svg')).toBeVisible({ timeout: 30_000 })
+  await diagram.dblclick()
+
+  const viewer = page.getByRole('dialog', { name: 'Mermaid 大图查看器' })
+  await expect(viewer).toBeVisible()
+  const zoomImage = viewer.getByRole('img', { name: '放大的 Mermaid 流程图' })
+  await expect(zoomImage).toBeVisible()
+  const zoomSvg = zoomImage.locator('svg')
+  await expect(zoomSvg).toBeVisible()
+  const imageDimensions = await zoomSvg.evaluate((image) => ({
+    clientWidth: image.getBoundingClientRect().width,
+    clientHeight: image.getBoundingClientRect().height,
+  }))
+  expect(imageDimensions.clientWidth).toBeGreaterThan(0)
+  expect(imageDimensions.clientHeight).toBeGreaterThan(0)
+  await expect(viewer.getByLabel('当前缩放比例')).toHaveText('100%')
+  await viewer.getByRole('button', { name: '放大流程图' }).click()
+  await expect(viewer.getByLabel('当前缩放比例')).toHaveText('125%')
+
+  const canvas = viewer.locator('.mermaid-zoom-canvas')
+  const box = await canvas.boundingBox()
+  if (!box) throw new Error('缺少流程图画布')
+  await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2)
+  await page.mouse.down()
+  await page.mouse.move(box.x + box.width / 2 + 80, box.y + box.height / 2 + 45)
+  await page.mouse.up()
+  await expect(viewer.locator('.mermaid-zoom-image')).toHaveAttribute('style', /translate\(80px, 45px\) scale\(1\.25\)/)
+
+  await viewer.getByRole('button', { name: '适应窗口' }).press('Enter')
+  await expect(viewer.getByLabel('当前缩放比例')).toHaveText('100%')
+  await expect(viewer.locator('.mermaid-zoom-image')).toHaveAttribute('style', /translate\(0px, 0px\) scale\(1\)/)
+  await canvas.dispatchEvent('wheel', { deltaY: -200 })
+  await expect(viewer.getByLabel('当前缩放比例')).toHaveText('135%')
+  await viewer.getByRole('button', { name: '适应窗口' }).press('Enter')
+
+  const duplicateIds = await page.evaluate(() => {
+    const original = new Set(Array.from(document.querySelectorAll('.mermaid-diagram svg[id], .mermaid-diagram svg [id]'), (element) => element.id))
+    return Array.from(document.querySelectorAll('.mermaid-zoom-image svg[id], .mermaid-zoom-image svg [id]')).filter((element) => original.has(element.id)).length
+  })
+  expect(duplicateIds).toBe(0)
+
+  await page.keyboard.press('Escape')
+  await expect(viewer).toBeHidden()
+})
+
 test('滚动长文档时 Mermaid 图表不会重复绘制或改变页面高度', async ({ page }) => {
   await page.goto('/')
   const fixturePath = process.env.MARKDOWN_FLICKER_FIXTURE
