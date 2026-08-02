@@ -1,4 +1,13 @@
 import type { DocumentRepository } from './domain-models'
+import type { DesktopDirectoryDocument } from './desktop-platform'
+
+export type DirectorySortMode =
+  | 'name-asc'
+  | 'name-desc'
+  | 'modified-desc'
+  | 'modified-asc'
+  | 'size-desc'
+  | 'size-asc'
 
 export type PinnedDirectory = {
   id: string
@@ -48,15 +57,39 @@ export function isDirectoryPinned(directories: PinnedDirectory[], path: string) 
 }
 
 export function normalizeDirectoryPath(path: string) {
-  return path.trim().replace(/[\\/]+$/, '').replace(/\\/g, '/').toLocaleLowerCase()
+  return displayDirectoryPath(path).replace(/[\\/]+$/, '').replace(/\\/g, '/').toLocaleLowerCase()
+}
+
+export function displayDirectoryPath(directoryPath: string) {
+  let path = directoryPath.trim()
+  if (/^\\\\\?\\UNC\\/i.test(path)) path = `\\\\${path.slice(8)}`
+  else if (/^\\\\\?\\/.test(path)) path = path.slice(4)
+  return path
 }
 
 export function displayDirectoryFromDocumentPath(documentPath: string) {
-  let path = documentPath.trim()
-  if (/^\\\\\?\\UNC\\/i.test(path)) path = `\\\\${path.slice(8)}`
-  else if (/^\\\\\?\\/.test(path)) path = path.slice(4)
+  const path = displayDirectoryPath(documentPath)
   const end = Math.max(path.lastIndexOf('\\'), path.lastIndexOf('/'))
   return end > 0 ? path.slice(0, end) : ''
+}
+
+const directoryNameCollator = new Intl.Collator('zh-CN', {
+  numeric: true,
+  sensitivity: 'base',
+})
+
+export function sortDirectoryDocuments(files: DesktopDirectoryDocument[], mode: DirectorySortMode) {
+  return [...files].sort((left, right) => {
+    if (mode.startsWith('name')) {
+      const result = directoryNameCollator.compare(left.fileName, right.fileName)
+      return mode.endsWith('desc') ? -result : result
+    }
+    const result = mode.startsWith('modified')
+      ? (left.modifiedAt ?? 0) - (right.modifiedAt ?? 0)
+      : left.size - right.size
+    if (result !== 0) return mode.endsWith('desc') ? -result : result
+    return directoryNameCollator.compare(left.fileName, right.fileName)
+  })
 }
 
 function directoryId(value: string) {

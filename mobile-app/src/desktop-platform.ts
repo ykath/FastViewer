@@ -28,6 +28,7 @@ export type DesktopDirectoryDocument = {
   path: string
   fileName: string
   size: number
+  modifiedAt?: number
 }
 
 export type DesktopDirectoryListing = {

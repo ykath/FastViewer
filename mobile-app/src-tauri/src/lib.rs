@@ -4,6 +4,7 @@ use std::{
     env, fs,
     path::{Path, PathBuf},
     sync::Mutex,
+    time::UNIX_EPOCH,
 };
 use tauri::{Emitter, Manager};
 use tauri_plugin_fs::FsExt;
@@ -47,6 +48,7 @@ pub struct DesktopDirectoryDocument {
     path: String,
     file_name: String,
     size: u64,
+    modified_at: Option<u64>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -276,6 +278,11 @@ fn list_directory_documents_impl(
             path: request.path,
             file_name: request.file_name,
             size: request.size,
+            modified_at: fs::metadata(&canonical_file)
+                .ok()
+                .and_then(|metadata| metadata.modified().ok())
+                .and_then(|modified| modified.duration_since(UNIX_EPOCH).ok())
+                .map(|duration| duration.as_millis().min(u64::MAX as u128) as u64),
         });
     }
     files.sort_by(|left, right| {

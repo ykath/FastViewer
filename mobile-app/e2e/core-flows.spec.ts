@@ -17,6 +17,22 @@ test('选择 Markdown 后进入阅读并可恢复到首页文件库', async ({ p
   await expect(page.getByText('回归测试.md')).toBeVisible()
 })
 
+test('文内搜索可用回车切换到下一个结果', async ({ page }) => {
+  await page.locator('input[type="file"]').setInputFiles({
+    name: '搜索回车.md',
+    mimeType: 'text/markdown',
+    buffer: Buffer.from('# 搜索\n\n关键字 第一处\n\n关键字 第二处'),
+  })
+  await page.getByRole('button', { name: '搜索' }).click()
+  const searchInput = page.getByPlaceholder('搜索当前文档')
+  await searchInput.fill('关键字')
+  await expect(page.locator('.search-count')).toHaveText('1/2')
+  await searchInput.press('Enter')
+  await expect(page.locator('.search-count')).toHaveText('2/2')
+  await searchInput.press('Shift+Enter')
+  await expect(page.locator('.search-count')).toHaveText('1/2')
+})
+
 test('粘贴 HTML 会显示安全预览并在严格沙盒打开', async ({ page }) => {
   await page.getByRole('button', { name: '粘贴打开' }).click()
   const dialog = page.getByRole('dialog')

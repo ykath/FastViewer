@@ -51,7 +51,7 @@ import type { HeadingItem, HtmlRenderInfo } from './html-processing'
 import { DEFAULT_READER_SETTINGS, nextThemePreference, themePreferenceLabel } from './reader-settings'
 import type { ReaderSettings, ThemeMode } from './reader-settings'
 import { desktopDocumentId, desktopPlatform } from './desktop-platform'
-import type { DesktopDirectoryListing, DesktopOpenRequest } from './desktop-platform'
+import type { DesktopDirectoryDocument, DesktopDirectoryListing, DesktopOpenRequest } from './desktop-platform'
 import type {
   AnnotationAnchor,
   DocumentAnnotation,
@@ -59,14 +59,17 @@ import type {
   BackgroundTask,
 } from './domain-models'
 import {
+  displayDirectoryPath,
   isDirectoryPinned,
   displayDirectoryFromDocumentPath,
   loadPinnedDirectories,
+  normalizeDirectoryPath,
   pinDirectory,
   savePinnedDirectories,
+  sortDirectoryDocuments,
   unpinDirectory,
 } from './desktop-directories'
-import type { PinnedDirectory } from './desktop-directories'
+import type { DirectorySortMode, PinnedDirectory } from './desktop-directories'
 import { filterCommands, matchCommandShortcut } from './desktop-commands'
 import type { DesktopCommand } from './desktop-commands'
 import { backgroundTasks } from './background-tasks'
@@ -308,6 +311,7 @@ function App() {
   const [pinnedDirectories, setPinnedDirectories] = useState<PinnedDirectory[]>([])
   const [currentDirectory, setCurrentDirectory] = useState<DesktopDirectoryListing | null>(null)
   const [directoryBrowser, setDirectoryBrowser] = useState<DesktopDirectoryListing | null>(null)
+  const [directorySortMode, setDirectorySortMode] = useState<DirectorySortMode>('name-asc')
   const [commandPaletteOpen, setCommandPaletteOpen] = useState(false)
   const [commandQuery, setCommandQuery] = useState('')
   const fileInputRef = useRef<HTMLInputElement>(null)
@@ -1093,6 +1097,10 @@ function App() {
   }
 
   const browsePinnedDirectory = async (directory: PinnedDirectory) => {
+    if (directoryBrowser && normalizeDirectoryPath(directoryBrowser.path) === normalizeDirectoryPath(directory.path)) {
+      setDirectoryBrowser(null)
+      return
+    }
     try {
       setDirectoryBrowser(await desktopPlatform.listDirectoryDocuments(directory.path))
     } catch {
@@ -1317,9 +1325,11 @@ function App() {
             onOpenPackageDocument={(item) => { void openDocument(item) }}
             annotationRepository={documentRepository}
             directoryListing={currentDirectory}
+            directorySortMode={directorySortMode}
             directoryPinned={Boolean(currentDirectory && isDirectoryPinned(pinnedDirectories, currentDirectory.path))}
             onToggleDirectoryPin={toggleCurrentDirectoryPin}
             onOpenDirectoryDocument={(path) => { void openDirectoryDocument(path) }}
+            onDirectorySortModeChange={setDirectorySortMode}
           />
         )}
 
@@ -1344,7 +1354,7 @@ function App() {
         currentView={view}
         hasReader={Boolean(activeDocument)}
         pinnedDirectories={pinnedDirectories}
-        activeDirectoryPath={directoryBrowser?.path ?? currentDirectory?.path}
+        activeDirectoryPath={directoryBrowser?.path}
         onBrowseDirectory={(directory) => { void browsePinnedDirectory(directory) }}
         onRemoveDirectory={(directory) => {
           persistPinnedDirectoryState(unpinDirectory(pinnedDirectories, directory.path))
@@ -1361,8 +1371,10 @@ function App() {
         <DirectoryBrowserPopover
           listing={directoryBrowser}
           activeDocumentPath={activeDocument?.sourceUri}
+          sortMode={directorySortMode}
           onOpen={(path) => { void openDirectoryDocument(path) }}
           onClose={() => setDirectoryBrowser(null)}
+          onSortModeChange={setDirectorySortMode}
         />
       )}
 
@@ -1700,9 +1712,11 @@ type ReaderPageProps = {
   onOpenPackageDocument: (document: DocumentRecord) => void
   annotationRepository: DocumentRepository
   directoryListing: DesktopDirectoryListing | null
+  directorySortMode: DirectorySortMode
   directoryPinned: boolean
   onToggleDirectoryPin: () => void
   onOpenDirectoryDocument: (path: string) => void
+  onDirectorySortModeChange: (mode: DirectorySortMode) => void
 }
 
 function ReaderPage({
@@ -1717,9 +1731,11 @@ function ReaderPage({
   onOpenPackageDocument,
   annotationRepository,
   directoryListing,
+  directorySortMode,
   directoryPinned,
   onToggleDirectoryPin,
   onOpenDirectoryDocument,
+  onDirectorySortModeChange,
 }: ReaderPageProps) {
   const isDesktop = desktopPlatform.isDesktop()
   const [searchOpen, setSearchOpen] = useState(false)
@@ -2239,6 +2255,11 @@ function ReaderPage({
       return !queryText || heading.text.toLocaleLowerCase().includes(queryText)
     })
   }, [headings, tocExpanded, tocQuery])
+
+  const sortedDirectoryFiles = useMemo(
+    () => sortDirectoryDocuments(directoryListing?.files ?? [], directorySortMode),
+    [directoryListing?.files, directorySortMode],
+  )
 
   const changeFontSize = (delta: number) => {
     const next = clamp(settings.fontSizeLevel + delta, 0, 4)
@@ -2976,13 +2997,13 @@ function ReaderPage({
     if (!directoryListing) {
       return <p className="sheet-empty">当前文件没有可访问的本地目录。</p>
     }
-    if (directoryListing.files.length === 0) {
+    if (sortedDirectoryFiles.length === 0) {
       return <p className="sheet-empty">当前目录没有 Markdown 或 HTML 文档。</p>
     }
     const activePath = document.sourceUri?.replace(/\\/g, '/').toLocaleLowerCase()
     return (
       <div className="directory-document-list" aria-label="当前目录文档">
-        {directoryListing.files.map((file) => {
+        {sortedDirectoryFiles.map((file) => {
           const selected = file.path.replace(/\\/g, '/').toLocaleLowerCase() === activePath
           return (
             <button
@@ -2996,7 +3017,7 @@ function ReaderPage({
               {file.fileName.toLocaleLowerCase().endsWith('.html') || file.fileName.toLocaleLowerCase().endsWith('.htm')
                 ? <FileCode2 size={16} />
                 : <FileText size={16} />}
-              <span><strong>{file.fileName}</strong><small>{formatBytes(file.size)}</small></span>
+              <span><strong>{file.fileName}</strong><small>{directoryFileDetails(file)}</small></span>
             </button>
           )
         })}
@@ -3149,6 +3170,11 @@ function ReaderPage({
               setQuery(event.target.value)
               setSearchIndex(0)
             }}
+            onKeyDown={(event) => {
+              if (event.key !== 'Enter') return
+              event.preventDefault()
+              nextSearchResult(event.shiftKey ? -1 : 1)
+            }}
           />
           <span className="search-count">
             {query ? `${searchCount ? searchIndex + 1 : 0}/${searchCount}` : '0/0'}
@@ -3221,17 +3247,20 @@ function ReaderPage({
           </button>
         </header>
         {directoryListing && desktopDirectoryMode === 'files' && (
-          <div className="current-directory-path">
-            <span title={directoryListing.path}>{directoryListing.path}</span>
-            <button
-              type="button"
-              className={directoryPinned ? 'active' : ''}
-              onClick={onToggleDirectoryPin}
-              title={`${directoryPinned ? '取消固定' : '固定到左侧'}：${directoryListing.path}`}
-            >
-              {directoryPinned ? <PinOff size={14} /> : <Pin size={14} />}
-              {directoryPinned ? '取消固定' : '固定到左侧'}
-            </button>
+          <div className="current-directory-toolbar">
+            <div className="current-directory-path">
+              <span title={displayDirectoryPath(directoryListing.path)}>{displayDirectoryPath(directoryListing.path)}</span>
+              <button
+                type="button"
+                className={directoryPinned ? 'active' : ''}
+                onClick={onToggleDirectoryPin}
+                title={`${directoryPinned ? '取消固定' : '固定到左侧'}：${displayDirectoryPath(directoryListing.path)}`}
+              >
+                {directoryPinned ? <PinOff size={14} /> : <Pin size={14} />}
+                {directoryPinned ? '取消固定' : '固定到左侧'}
+              </button>
+            </div>
+            <DirectorySortControl value={directorySortMode} onChange={onDirectorySortModeChange} />
           </div>
         )}
         <div className="desktop-toc-content" role="region" aria-label={desktopDirectoryMode === 'chapters' ? '可滚动章节列表' : '当前目录文档列表'} tabIndex={0}>
@@ -3798,9 +3827,9 @@ function BottomNav({ currentView, hasReader, pinnedDirectories, activeDirectoryP
           {pinnedDirectories.map((directory) => (
             <div className="pinned-directory-item" key={directory.id}>
               <button
-                className={activeDirectoryPath?.replace(/\\/g, '/').toLocaleLowerCase() === directory.path.replace(/\\/g, '/').toLocaleLowerCase() ? 'active' : ''}
+                className={activeDirectoryPath && normalizeDirectoryPath(activeDirectoryPath) === normalizeDirectoryPath(directory.path) ? 'active' : ''}
                 type="button"
-                title={directory.path}
+                title={displayDirectoryPath(directory.path)}
                 aria-label={`查看目录 ${directory.name}`}
                 onClick={() => onBrowseDirectory(directory)}
               >
@@ -3810,7 +3839,7 @@ function BottomNav({ currentView, hasReader, pinnedDirectories, activeDirectoryP
               <button
                 className="pinned-directory-remove"
                 type="button"
-                title={`取消收藏：${directory.path}`}
+                title={`取消收藏：${displayDirectoryPath(directory.path)}`}
                 aria-label={`取消收藏目录 ${directory.name}`}
                 onClick={() => onRemoveDirectory(directory)}
               >
@@ -3824,32 +3853,59 @@ function BottomNav({ currentView, hasReader, pinnedDirectories, activeDirectoryP
   )
 }
 
-function DirectoryBrowserPopover({ listing, activeDocumentPath, onOpen, onClose }: {
+function DirectoryBrowserPopover({ listing, activeDocumentPath, sortMode, onOpen, onClose, onSortModeChange }: {
   listing: DesktopDirectoryListing
   activeDocumentPath?: string
+  sortMode: DirectorySortMode
   onOpen: (path: string) => void
   onClose: () => void
+  onSortModeChange: (mode: DirectorySortMode) => void
 }) {
   const activePath = activeDocumentPath?.replace(/\\/g, '/').toLocaleLowerCase()
+  const sortedFiles = useMemo(() => sortDirectoryDocuments(listing.files, sortMode), [listing.files, sortMode])
   return (
     <aside className="directory-browser-popover desktop-only" aria-label={`目录 ${listing.name}`}>
       <header>
-        <div><strong>{listing.name}</strong><small title={listing.path}>{listing.path}</small></div>
+        <div><strong>{listing.name}</strong><small title={displayDirectoryPath(listing.path)}>{displayDirectoryPath(listing.path)}</small></div>
         <button className="icon-button" type="button" onClick={onClose} aria-label="关闭目录"><X size={16} /></button>
       </header>
+      <DirectorySortControl value={sortMode} onChange={onSortModeChange} />
       <div className="directory-browser-files">
         {listing.files.length === 0 && <p className="sheet-empty">目录中没有 Markdown 或 HTML 文档。</p>}
-        {listing.files.map((file) => {
+        {sortedFiles.map((file) => {
           const selected = file.path.replace(/\\/g, '/').toLocaleLowerCase() === activePath
           return (
             <button key={file.path} type="button" className={selected ? 'active' : ''} disabled={selected} title={file.path} onClick={() => onOpen(file.path)}>
               <FileText size={16} />
-              <span><strong>{file.fileName}</strong><small>{formatBytes(file.size)}</small></span>
+              <span><strong>{file.fileName}</strong><small>{directoryFileDetails(file)}</small></span>
             </button>
           )
         })}
       </div>
     </aside>
+  )
+}
+
+function DirectorySortControl({ value, onChange }: {
+  value: DirectorySortMode
+  onChange: (mode: DirectorySortMode) => void
+}) {
+  return (
+    <label className="directory-sort-control">
+      <span>排序</span>
+      <select
+        aria-label="目录文件排序方式"
+        value={value}
+        onChange={(event) => onChange(event.target.value as DirectorySortMode)}
+      >
+        <option value="name-asc">名称 A–Z</option>
+        <option value="name-desc">名称 Z–A</option>
+        <option value="modified-desc">最新修改</option>
+        <option value="modified-asc">最早修改</option>
+        <option value="size-desc">文件从大到小</option>
+        <option value="size-asc">文件从小到大</option>
+      </select>
+    </label>
   )
 }
 
@@ -4565,6 +4621,20 @@ function formatBytes(bytes: number) {
   if (bytes < 1024) return `${bytes} B`
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`
   return `${(bytes / 1024 / 1024).toFixed(1)} MB`
+}
+
+function directoryFileDetails(file: DesktopDirectoryDocument) {
+  if (!file.modifiedAt) return formatBytes(file.size)
+  const modified = new Date(file.modifiedAt)
+  if (Number.isNaN(modified.getTime())) return formatBytes(file.size)
+  const modifiedText = modified.toLocaleString('zh-CN', {
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false,
+  })
+  return `${formatBytes(file.size)} · ${modifiedText}`
 }
 
 function inferDocumentMime(document: DocumentRecord) {

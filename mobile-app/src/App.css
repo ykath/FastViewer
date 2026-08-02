@@ -2948,9 +2948,12 @@ html[data-runtime='desktop'] .desktop-toc-header .directory-pin-button.active {
   background: var(--accent-soft);
 }
 
-html[data-runtime='desktop'] .current-directory-path {
-  padding: 8px 14px;
+html[data-runtime='desktop'] .current-directory-toolbar {
   border-bottom: 1px solid var(--border);
+}
+
+html[data-runtime='desktop'] .current-directory-path {
+  padding: 8px 14px 5px;
   color: var(--text-muted);
   font-size: 11px;
   display: flex;
@@ -2985,6 +2988,34 @@ html[data-runtime='desktop'] .current-directory-path > button.active {
   color: var(--accent);
   border-color: color-mix(in srgb, var(--accent) 35%, var(--border));
   background: var(--accent-soft);
+}
+
+html[data-runtime='desktop'] .directory-sort-control {
+  min-height: 36px;
+  padding: 4px 14px 8px;
+  color: var(--text-muted);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 11px;
+}
+
+html[data-runtime='desktop'] .directory-sort-control select {
+  flex: 1;
+  min-width: 0;
+  height: 28px;
+  padding: 0 26px 0 8px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  outline: 0;
+  background: var(--surface);
+  color: var(--text);
+  font: inherit;
+}
+
+html[data-runtime='desktop'] .directory-sort-control select:focus-visible {
+  border-color: color-mix(in srgb, var(--accent) 55%, var(--border));
+  box-shadow: 0 0 0 2px var(--accent-soft);
 }
 
 html[data-runtime='desktop'] .directory-document-list,
@@ -3125,6 +3156,12 @@ html[data-runtime='desktop'] .directory-browser-popover > header small {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+html[data-runtime='desktop'] .directory-browser-popover > .directory-sort-control {
+  border-bottom: 1px solid var(--border);
+  padding-top: 7px;
+  padding-bottom: 7px;
 }
 
 html[data-runtime='desktop'] .directory-browser-files {
