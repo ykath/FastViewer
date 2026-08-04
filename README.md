@@ -10,29 +10,29 @@
 
 | 平台 | 当前源码版本 | 最新公开 Release | 说明 |
 | --- | --- | --- | --- |
-| Windows x64 | **1.5.1** | **v1.5.1** | 提供安装版和便携版 |
-| Android | **1.5.1**（`versionCode 7`） | **v1.5.1** | 提供调试证书签名 APK |
+| Windows x64 | **1.6.0** | **v1.5.1** | 1.6.0 待发布，提供安装版和便携版 |
+| Android | **1.6.0**（`versionCode 8`） | **v1.5.1** | 1.6.0 待发布，提供调试证书签名 APK |
 
-> `v1.5.1` 同时包含 Windows 与 Android 构建，两个平台共享相同的前端阅读能力。
+> 当前源码为 `1.6.0`；最新公开 Release 仍为 `v1.5.1`，待 1.6.0 构建验收后统一发布。
 
 ## 下载
 
 请从项目的 [GitHub Releases](https://github.com/ykath/FastViewer/releases) 下载，避免使用来源不明的安装文件。
 
-### Windows 1.5.1
+### Windows 1.6.0
 
 [前往最新 Release](https://github.com/ykath/FastViewer/releases/latest)：
 
-- 安装版：`LightPage_1.5.1_windows-x64-setup.exe`
-- 便携版：`LightPage_1.5.1_windows-x64.exe`
+- 安装版：`LightPage_1.6.0_windows-x64-setup.exe`
+- 便携版：`LightPage_1.6.0_windows-x64.exe`
 
-推荐普通用户使用安装版。便携版依赖目标电脑已安装 Microsoft Edge WebView2 Runtime。
+推荐普通用户使用安装版。便携版是包含 URL importer sidecar 的静默自解压单文件，运行期间会在系统临时目录展开；仍依赖目标电脑已安装 Microsoft Edge WebView2 Runtime。
 
-### Android 1.5.1
+### Android 1.6.0
 
 Android 安装包与 Windows 版本一并发布：
 
-- `LightPage_1.5.1_android-debug.apk`
+- `LightPage_1.6.0_android-debug.apk`
 
 > Android APK 使用调试证书签名，Windows 文件尚未进行代码签名。Android 调试签名版本可能无法覆盖其他证书签名的旧版本；Windows SmartScreen 也可能显示安全提示。
 
@@ -50,7 +50,7 @@ Android 安装包与 Windows 版本一并发布：
 - HTML 默认在安全沙箱内渲染，危险脚本、自动跳转、自动下载和远程资源受到限制。
 - 文档正文、搜索词和批注默认只在本机处理，不自动上传到服务器。
 
-### Android 1.5.1
+### Android 1.6.0
 
 - 支持从其他应用通过 `VIEW`、`SEND`、`SEND_MULTIPLE` 打开文件；请求先复制到应用私有目录，再通过持久化队列按顺序处理，可确认、重试、丢弃并在进程重启后恢复。
 - 支持 ZIP / RAR 文档包持久化、SHA-256 去重、条目按需加载、包内目录、上一篇/下一篇和阅读位置恢复；优先打开 README 或 index 文档。
@@ -62,7 +62,12 @@ Android 安装包与 Windows 版本一并发布：
 - 针对 600 dp / 840 dp 宽度提供平板、横屏和折叠屏布局，并避让折叠铰链区域。
 - 提供缓存占用统计与清理入口；解压缓存按 LRU 回收，分享缓存、外部打开队列和低存储场景设有容量保护。
 
-### Windows 1.5.1
+### Windows 1.6.0
+
+- 支持从首页或命令面板导入 HTTP/HTTPS URL；自动将网页转换为本地 Markdown，并立即加入文件库打开。
+- 通用网页采用页面正文清理并在质量不足时回退 Defuddle；专项支持 X/Twitter、YouTube 字幕和 Hacker News 评论线程。
+- URL 快照保存在“文档/LightPage/url-to-markdown”，图片下载到文章的 `imgs/` 目录；重复导入保留带时间戳的新快照。
+- 登录、Cloudflare 或 CAPTCHA 页面可在隔离的 Chrome/Edge profile 中交互重试，并可在设置中清除登录数据。
 
 - 保持单活动文档阅读模式；左侧阅读栏可在“章节”和“当前目录”之间切换，快速打开同目录的 Markdown / HTML 文档。
 - 可将当前目录固定到最左侧导航栏，悬停查看完整路径，并随时取消固定。
@@ -78,19 +83,21 @@ Android 安装包与 Windows 版本一并发布：
 
 ## 平台差异与已知限制
 
-| 能力 | Android 1.5.1 | Windows 1.5.1 |
+| 能力 | Android 1.6.0 | Windows 1.6.0 |
 | --- | --- | --- |
 | 从其他应用/资源管理器打开 | 支持 Android Intent 与系统分享入口 | 支持文件选择、拖放、文件关联和单实例唤起 |
 | ZIP / RAR 文档包 | 支持 | 暂不支持原生导入 |
 | 批注、书签、批注摘要 | 支持 | 数据底座兼容，当前重点仍是单文件阅读 |
 | 分享卡片、系统分享 | 支持 | 以图片、PDF 和原文件导出为主 |
 | 同目录文档切换、固定目录 | 不适用 | 支持 |
+| URL 转 Markdown、图片本地化 | 暂不支持 | 支持，需要 Chrome 或 Edge |
 | Mermaid 全屏缩放查看 | 常规自适应显示 | 支持双击全屏查看 |
 | 发布架构 | Android APK | 仅 Windows x64 |
 
 其他限制：
 
 - Windows 当前不提供多标签、后台标签恢复或并排阅读。
+- URL 导入仅在 Windows x64 开启，依赖系统安装 Chrome 或 Edge；受登录、反爬策略、字幕权限及网站结构变化影响，个别页面可能需要交互或无法完整提取。
 - Windows 只枚举和打开受支持的 Markdown / HTML 文档；目录收藏不是完整的文件管理器或在线工作区。
 - Android 的 RAR 解压依赖当前原生库，不支持 RAR5 或加密压缩包；这类文件请转换为 ZIP 或 RAR4。
 - HTML 默认采用最小权限沙箱策略；被拦截的脚本或远程资源需要用户明确授权，不能假定任意网页应用都能完整运行。
@@ -98,7 +105,14 @@ Android 安装包与 Windows 版本一并发布：
 
 ## 版本变化
 
-### v1.5.1（2026-08-04，当前公开版本）
+### v1.6.0（2026-08-04，当前源码版本）
+
+- Windows 新增 URL 导入，将通用网页、X/Twitter、YouTube 字幕和 Hacker News 转换为本地 Markdown。
+- URL 快照按域名和标题保存到系统“文档”目录，图片本地化并保留重复导入历史。
+- 增加后台抓取质量门禁、隔离浏览器交互重试、任务进度、取消和网页登录数据清理。
+- Windows 与 Android 源码版本统一升级为 1.6.0，Android `versionCode` 升至 8。
+
+### v1.5.1（2026-08-04，上一公开版本）
 
 - 修复 HTML `srcdoc` 页内锚点错误继承应用地址、点击后 iframe 变为空白的问题。
 - 修复启用脚本隔离后，轻页生成的 HTML 目录无法定位章节的问题；目录通过受限消息桥在隔离文档内完成滚动。
@@ -190,7 +204,7 @@ Android 安装包与 Windows 版本一并发布：
 
 ## 本地开发
 
-基础环境：Node.js、npm。Android 构建还需要 JDK 21 和 Android SDK；Windows 构建还需要 Rust stable、`x86_64-pc-windows-msvc` target、Microsoft Visual C++ x64 Build Tools 和 WebView2。
+基础环境：Node.js、npm。Android 构建还需要 JDK 21 和 Android SDK；Windows 构建还需要 Bun、Rust stable、`x86_64-pc-windows-msvc` target、Microsoft Visual C++ x64 Build Tools 和 WebView2。Bun 只用于开发/发布时编译 URL importer，最终用户无需安装 Bun 或 Node.js。
 
 ```bash
 cd mobile-app
@@ -236,6 +250,7 @@ FastViewer/
 │  ├─ android/          Capacitor Android 原生工程
 │  ├─ src-tauri/        Tauri / Rust Windows 工程
 │  ├─ src/              跨平台 React 前端与领域层
+│  ├─ url-importer/     Windows URL 转 Markdown sidecar
 │  └─ e2e/              Playwright 端到端测试
 ├─ doc/                 产品、帮助、隐私、实现与发布文档
 ├─ test/                测试资料

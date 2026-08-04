@@ -92,4 +92,24 @@ describe('IndexedDB v4 文档仓储', () => {
     expect(await repository.getDocument(stableId)).toMatchObject({ id: stableId, contentRef: { kind: 'desktop-file', path } })
     expect(await repository.getReaderState(stableId)).toMatchObject({ position: 42, progress: 0.4 })
   })
+
+  it('持久化 URL 来源元数据且删除记录不删除桌面快照', async () => {
+    const path = 'C:\\Users\\Tester\\Documents\\LightPage\\url-to-markdown\\example.com\\article\\article.md'
+    const repository = new IndexedDbDocumentRepository([record('url-import', {
+      sourceUri: path,
+      sourceType: 'URL 导入（generic）',
+      sourceUrl: 'https://example.com/article',
+      sourceAdapter: 'generic',
+    })])
+    await repository.migrate()
+    const stableId = desktopDocumentId(path)
+    expect(await repository.getDocument(stableId)).toMatchObject({
+      sourceUri: path,
+      sourceUrl: 'https://example.com/article',
+      sourceAdapter: 'generic',
+      contentRef: { kind: 'desktop-file', path },
+    })
+    await repository.deleteDocument(stableId)
+    expect(await repository.getDocument(stableId)).toBeNull()
+  })
 })

@@ -109,6 +109,8 @@ function metadataFingerprint(document: DocumentRecord) {
     fileSize: document.fileSize,
     sourceType: document.sourceType,
     sourceUri: document.sourceUri,
+    sourceUrl: document.sourceUrl,
+    sourceAdapter: document.sourceAdapter,
     encoding: document.encoding,
     lastOpenedAt: document.lastOpenedAt,
     isFavorite: document.isFavorite,

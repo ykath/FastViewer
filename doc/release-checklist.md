@@ -5,8 +5,11 @@
 - `npm run lint`
 - `npm run desktop:test`
 - `npm run desktop:build`
-- 确认 `mobile-app/release/windows/LightPage.exe` 与 `LightPage_1.1.2_x64-setup.exe` 均生成。
+- 确认 Bun 可用、锁定依赖安装成功、importer 单测通过，并已生成 Windows x64 baseline sidecar。
+- 确认 `mobile-app/release/windows/LightPage_1.6.0_windows-x64.exe` 与 `LightPage_1.6.0_windows-x64-setup.exe` 均生成且包含 URL importer sidecar。
 - 在 Windows 10/11 验证安装、卸载、冷启动双击 Markdown、运行中再次双击、中文/空格文件名、应用内 HTML、搜索、目录、主题、阅读进度和导出。
+- 在未安装 Bun/Node.js 的干净 Windows 环境验证通用文章、X 单帖/线程、YouTube 有/无字幕、HN 评论、登录/CAPTCHA、离线图片、重复快照、浏览器缺失、网络超时和取消。
+- 验证 URL 导入只使用 LightPage 隔离 profile，“清除网页登录数据”不会删除应用目录中的其他文件。
 - 首版产物未签名，发布说明必须提示 SmartScreen；不得提交证书、私钥或密码。
 
 ## 自动化 Gate

@@ -25,6 +25,8 @@ mobile-app/benchmarks/generated/
 mobile-app/test-results/
 mobile-app/playwright-report/
 mobile-app/src-tauri/target/
+mobile-app/src-tauri/binaries/lightpage-url-importer-*.exe
+mobile-app/url-importer/.cache/
 mobile-app/src-tauri/gen/schemas/
 mobile-app/release/
 mobile-app/src-tauri/tauri.signing.conf.json

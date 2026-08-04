@@ -15,6 +15,7 @@ set "CARGO_HTTP_MULTIPLEXING=false"
 echo [1/5] Checking toolchain...
 where node >nul 2>&1 || (echo ERROR: node not found & exit /b 1)
 where npm >nul 2>&1 || (echo ERROR: npm not found & exit /b 1)
+where bun >nul 2>&1 || (echo ERROR: bun not found; install Bun to compile the URL importer & exit /b 1)
 where rustc >nul 2>&1 || (echo ERROR: rustc not found & exit /b 1)
 where cargo >nul 2>&1 || (echo ERROR: cargo not found & exit /b 1)
 rustup target list --installed | findstr /c:"x86_64-pc-windows-msvc" >nul || (
@@ -31,7 +32,7 @@ if not defined VS_PATH (
   echo ERROR: Microsoft Visual C++ x64 build tools are not installed
   exit /b 1
 )
-echo       Node, npm, Rust and Windows x64 target are ready.
+echo       Node, npm, Bun, Rust and Windows x64 target are ready.
 echo       MSVC = %VS_PATH%
 echo.
 
@@ -55,10 +56,15 @@ echo.
 
 echo [5/5] Collecting build artifacts...
 if not exist "%OUTPUT_DIR%" mkdir "%OUTPUT_DIR%"
-copy /Y "%MOBILE_APP%\src-tauri\target\release\lightpage.exe" "%OUTPUT_DIR%\LightPage.exe" >nul
-if %errorlevel% neq 0 (echo ERROR: LightPage.exe was not found & exit /b 1)
-copy /Y "%MOBILE_APP%\src-tauri\target\release\lightpage.exe" "%OUTPUT_DIR%\LightPage_%APP_VERSION%_windows-x64.exe" >nul
-if %errorlevel% neq 0 (echo ERROR: versioned LightPage.exe could not be created & exit /b 1)
+if not exist "%MOBILE_APP%\src-tauri\target\release\lightpage.exe" (echo ERROR: LightPage.exe was not found & exit /b 1)
+if not exist "%MOBILE_APP%\src-tauri\target\release\lightpage-url-importer.exe" (echo ERROR: URL importer sidecar was not found & exit /b 1)
+set "MAKENSIS=%LOCALAPPDATA%\tauri\NSIS\makensis.exe"
+if not exist "%MAKENSIS%" set "MAKENSIS=%LOCALAPPDATA%\tauri\NSIS\Bin\makensis.exe"
+if not exist "%MAKENSIS%" (echo ERROR: Tauri NSIS compiler was not found & exit /b 1)
+"%MAKENSIS%" /DAPP_VERSION=%APP_VERSION% /DAPP_FILE_VERSION=%APP_VERSION%.0 "%MOBILE_APP%\src-tauri\portable.nsi"
+if %errorlevel% neq 0 (echo ERROR: portable self-extracting build failed & exit /b 1)
+copy /Y "%OUTPUT_DIR%\LightPage_%APP_VERSION%_windows-x64.exe" "%OUTPUT_DIR%\LightPage.exe" >nul
+if %errorlevel% neq 0 (echo ERROR: portable LightPage.exe could not be created & exit /b 1)
 
 if not exist "%MOBILE_APP%\src-tauri\target\release\bundle\nsis\*setup.exe" (
   echo ERROR: NSIS installer was not found

@@ -16,6 +16,7 @@ import {
   Home,
   ImageDown,
   ListTree,
+  Link2,
   Loader2,
   Menu,
   MessageSquare,
@@ -50,8 +51,14 @@ import { buildSafeHtmlDocument, extractMarkdownHeadings, rewriteRelativeResource
 import type { HeadingItem, HtmlRenderInfo } from './html-processing'
 import { DEFAULT_READER_SETTINGS, nextThemePreference, themePreferenceLabel } from './reader-settings'
 import type { ReaderSettings, ThemeMode } from './reader-settings'
-import { desktopDocumentId, desktopPlatform } from './desktop-platform'
-import type { DesktopDirectoryDocument, DesktopDirectoryListing, DesktopOpenRequest } from './desktop-platform'
+import { desktopDocumentId, desktopPlatform, normalizeUrlImportInput } from './desktop-platform'
+import type {
+  DesktopDirectoryDocument,
+  DesktopDirectoryListing,
+  DesktopOpenRequest,
+  UrlImportOutcome,
+  UrlImportProgress,
+} from './desktop-platform'
 import type {
   AnnotationAnchor,
   DocumentAnnotation,
@@ -116,6 +123,14 @@ const FILE_SIZE_DANGER = 10 * 1024 * 1024
 type ToastState = {
   message: string
   tone?: 'normal' | 'success' | 'warning'
+}
+
+type UrlImportState = {
+  jobId: string
+  status: 'running' | 'needsInteraction' | 'failed'
+  progress: UrlImportProgress
+  outcome?: Extract<UrlImportOutcome, { status: 'needsInteraction' | 'failed' }>
+  interactive: boolean
 }
 
 type ExternalFileResult = {
@@ -306,6 +321,8 @@ function App() {
   )
   const [largeSizeConfirm, setLargeSizeConfirm] = useState<{ resolve: (v: boolean) => void; size: number } | null>(null)
   const [pasteDraft, setPasteDraft] = useState<string | null>(null)
+  const [urlDraft, setUrlDraft] = useState<string | null>(null)
+  const [urlImport, setUrlImport] = useState<UrlImportState | null>(null)
   const [failedOpenRequest, setFailedOpenRequest] = useState<NativeOpenRequest | null>(null)
   const [returnDocumentId, setReturnDocumentId] = useState<string | null>(null)
   const [pinnedDirectories, setPinnedDirectories] = useState<PinnedDirectory[]>([])
@@ -548,7 +565,14 @@ function App() {
     fileSize?: number,
     startedAt = startPerformanceSpan(),
     loadResources?: (content: string) => Promise<Record<string, string>>,
-    options: { recordId?: string; openAfterImport?: boolean; silent?: boolean } = {},
+    options: {
+      recordId?: string
+      openAfterImport?: boolean
+      silent?: boolean
+      sourceUrl?: string
+      sourceAdapter?: string
+      inLibrary?: boolean
+    } = {},
   ) => {
     finishPerformanceSpan('content-readable', startedAt, { bytes: bytes.length })
     const decodeStartedAt = startPerformanceSpan()
@@ -578,6 +602,9 @@ function App() {
       archiveResources,
       }),
       ...(options.recordId ? { id: options.recordId } : {}),
+      ...(options.sourceUrl ? { sourceUrl: options.sourceUrl } : {}),
+      ...(options.sourceAdapter ? { sourceAdapter: options.sourceAdapter } : {}),
+      ...(options.inLibrary ? { inLibrary: true } : {}),
       contentRevision: stableDocumentId(fileName, result.content),
       payloadLoaded: true,
     }
@@ -594,7 +621,12 @@ function App() {
     return record
   }
 
-  const importDesktopRequest = async (request: DesktopOpenRequest, openAfterImport = true, silent = false) => {
+  const importDesktopRequest = async (
+    request: DesktopOpenRequest,
+    openAfterImport = true,
+    silent = false,
+    urlMetadata?: { sourceUrl: string; sourceAdapter: string },
+  ) => {
     const startedAt = startPerformanceSpan()
     if (openAfterImport && request.size >= FILE_SIZE_DANGER) {
       setView('loading')
@@ -610,7 +642,9 @@ function App() {
     if (openAfterImport) setView('loading')
     try {
       const bytes = await desktopPlatform.readDocument(request)
-      const sourceType = request.source === 'picker' ? 'Windows 文件选择器' : 'Windows 资源管理器'
+      const sourceType = request.source === 'url'
+        ? `URL 导入${urlMetadata?.sourceAdapter ? `（${urlMetadata.sourceAdapter}）` : ''}`
+        : request.source === 'picker' ? 'Windows 文件选择器' : 'Windows 资源管理器'
       await processBytes(
         bytes,
         request.fileName,
@@ -619,7 +653,14 @@ function App() {
         request.size,
         startedAt,
         (content) => desktopPlatform.loadMarkdownResources(request.path, content),
-        { recordId: desktopDocumentId(request.path), openAfterImport, silent },
+        {
+          recordId: desktopDocumentId(request.path),
+          openAfterImport,
+          silent,
+          sourceUrl: urlMetadata?.sourceUrl,
+          sourceAdapter: urlMetadata?.sourceAdapter,
+          inLibrary: request.source === 'url',
+        },
       )
       if (settings.desktopRecentDocuments) void desktopPlatform.addRecentDocument(request.path).catch(() => undefined)
     } catch (error) {
@@ -923,6 +964,24 @@ function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [documentsHydrated, isDesktop])
 
+  useEffect(() => {
+    if (!isDesktop) return undefined
+    let disposed = false
+    let unlisten: (() => void) | undefined
+    void desktopPlatform.listenForUrlImportProgress((progress) => {
+      if (!disposed) {
+        setUrlImport((current) => current?.jobId === progress.jobId ? { ...current, progress } : current)
+      }
+    }).then((remove) => {
+      if (disposed) remove()
+      else unlisten = remove
+    }).catch(() => undefined)
+    return () => {
+      disposed = true
+      unlisten?.()
+    }
+  }, [isDesktop])
+
   const handlePickedFile = async (file: File) => {
     const startedAt = startPerformanceSpan()
     try {
@@ -997,6 +1056,83 @@ function App() {
       if (/cancel/i.test(message)) setView('home')
       else showError('UNKNOWN', message)
     }
+  }
+
+  const openUrlDialog = () => {
+    setUrlDraft('')
+    setUrlImport(null)
+  }
+
+  const runUrlImport = async (interactive = false) => {
+    if (urlDraft === null) return
+    const normalized = normalizeUrlImportInput(urlDraft)
+    if (!normalized) {
+      showToast('请输入有效的 http:// 或 https:// URL', 'warning')
+      return
+    }
+    const jobId = urlImport?.jobId ?? crypto.randomUUID().replace(/[^a-zA-Z0-9_-]/g, '')
+    setUrlImport({
+      jobId,
+      status: 'running',
+      interactive,
+      progress: {
+        jobId,
+        phase: interactive ? 'interaction' : 'browser',
+        message: interactive ? '正在打开交互浏览器' : '正在准备网页抓取',
+        progress: 2,
+      },
+    })
+    try {
+      const outcome = await desktopPlatform.importUrl(jobId, normalized, interactive)
+      if (outcome.status === 'ok') {
+        await importDesktopRequest(outcome.openRequest, true, false, {
+          sourceUrl: outcome.canonicalUrl || outcome.requestedUrl,
+          sourceAdapter: outcome.adapter,
+        })
+        setUrlImport(null)
+        setUrlDraft(null)
+        const warning = outcome.warnings.length ? `，${outcome.warnings.length} 项资源警告` : ''
+        showToast(`网页已导入，已本地化 ${outcome.downloadedImages} 张图片${warning}`, outcome.warnings.length ? 'warning' : 'success')
+        return
+      }
+      if (outcome.status === 'needsInteraction') {
+        setUrlImport((current) => current?.jobId === jobId ? {
+          ...current,
+          status: 'needsInteraction',
+          outcome,
+          progress: { ...current.progress, phase: 'interaction', message: outcome.interaction.reason, progress: 25 },
+        } : current)
+        return
+      }
+      if (outcome.status === 'failed') {
+        setUrlImport((current) => current?.jobId === jobId ? {
+          ...current,
+          status: 'failed',
+          outcome,
+          progress: { ...current.progress, message: outcome.message },
+        } : current)
+        return
+      }
+      setUrlImport(null)
+      showToast('已取消 URL 导入', 'warning')
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'URL 导入失败'
+      setUrlImport((current) => current?.jobId === jobId ? {
+        ...current,
+        status: 'failed',
+        outcome: { status: 'failed', code: 'UNKNOWN', message, retryable: true },
+        progress: { ...current.progress, message },
+      } : current)
+    }
+  }
+
+  const cancelUrlImport = async () => {
+    const jobId = urlImport?.jobId
+    if (jobId && urlImport.status === 'running') {
+      await desktopPlatform.cancelUrlImport(jobId).catch(() => undefined)
+    }
+    setUrlImport(null)
+    setUrlDraft(null)
   }
 
   const updateActiveDocument = useCallback((patch: Partial<DocumentRecord>) => {
@@ -1140,6 +1276,7 @@ function App() {
 
   const desktopCommands: DesktopCommand[] = [
     { id: 'file.open', title: '打开文件', keywords: ['open'], shortcut: 'Ctrl+O', run: () => openFilePicker() },
+    { id: 'file.open-url', title: '从 URL 导入', keywords: ['url', 'web', '网页'], shortcut: 'Ctrl+Shift+O', run: openUrlDialog },
     { id: 'directory.pin', title: currentDirectory && isDirectoryPinned(pinnedDirectories, currentDirectory.path) ? '取消固定当前目录' : '固定当前目录', keywords: ['folder', 'directory'], enabled: () => Boolean(currentDirectory), run: toggleCurrentDirectoryPin },
     { id: 'document.find', title: '在当前文档中查找', keywords: ['search'], shortcut: 'Ctrl+F', enabled: () => view === 'reader', run: () => dispatchReaderCommand('find') },
     { id: 'document.favorite', title: activeDocument?.isFavorite ? '取消收藏当前文档' : '收藏当前文档', shortcut: 'Ctrl+D', enabled: () => Boolean(activeDocument), run: () => updateActiveDocument({ isFavorite: !activeDocument?.isFavorite }) },
@@ -1266,6 +1403,7 @@ function App() {
             onTabChange={setActiveTab}
             onOpenFile={(document) => { void openDocument(document) }}
             onPickFile={() => { void openFilePicker() }}
+            onOpenUrl={isDesktop ? openUrlDialog : undefined}
             onPasteOpen={() => { void openPasteDialog() }}
             onDelete={deleteDocument}
             onRevealFile={isDesktop ? (document) => {
@@ -1408,6 +1546,21 @@ function App() {
         />
       )}
 
+      {urlDraft !== null && (
+        <UrlImportDialog
+          value={urlDraft}
+          state={urlImport}
+          onChange={setUrlDraft}
+          onCancel={() => { void cancelUrlImport() }}
+          onStart={() => { void runUrlImport(false) }}
+          onInteractiveRetry={() => { void runUrlImport(true) }}
+          onRetry={() => { void runUrlImport(false) }}
+          onResume={() => {
+            if (urlImport?.jobId) void desktopPlatform.resumeUrlImport(urlImport.jobId)
+          }}
+        />
+      )}
+
       {failedOpenRequest && (
         <div className="sheet-backdrop" role="presentation">
           <section className="sheet" role="dialog" aria-modal="true" aria-label="外部打开请求处理失败">
@@ -1462,6 +1615,7 @@ type HomePageProps = {
   onTabChange: (tab: HomeTab) => void
   onOpenFile: (doc: DocumentRecord) => void
   onPickFile: () => void
+  onOpenUrl?: () => void
   onPasteOpen: () => void
   onDelete: (doc: DocumentRecord) => void
   onRevealFile?: (doc: DocumentRecord) => void
@@ -1475,6 +1629,7 @@ function HomePage({
   onTabChange,
   onOpenFile,
   onPickFile,
+  onOpenUrl,
   onPasteOpen,
   onDelete,
   onRevealFile,
@@ -1528,7 +1683,7 @@ function HomePage({
         <span className="file-count">{documents.length} 个文件</span>
       </header>
 
-      <section className="quick-actions" aria-label="打开方式">
+      <section className={`quick-actions${onOpenUrl ? ' with-url' : ''}`} aria-label="打开方式">
         <button className="primary-action" type="button" onClick={onPickFile}>
           <FolderOpen size={20} />
           <span>打开文件</span>
@@ -1537,6 +1692,12 @@ function HomePage({
           <Copy size={19} />
           <span>粘贴打开</span>
         </button>
+        {onOpenUrl && (
+          <button className="secondary-action" type="button" onClick={onOpenUrl}>
+            <Link2 size={19} />
+            <span>打开 URL</span>
+          </button>
+        )}
       </section>
 
       <div className="local-note">
@@ -1630,6 +1791,12 @@ function HomePage({
                     <span className="file-directory" title={directoryPath}>
                       <FolderOpen size={12} />
                       <span>{directoryPath}</span>
+                    </span>
+                  )}
+                  {file.sourceUrl && (
+                    <span className="file-directory" title={file.sourceUrl}>
+                      <Link2 size={12} />
+                      <span>{sourceHost(file.sourceUrl)}</span>
                     </span>
                   )}
                 </span>
@@ -3973,6 +4140,75 @@ function Sheet({
   )
 }
 
+function UrlImportDialog({
+  value,
+  state,
+  onChange,
+  onCancel,
+  onStart,
+  onInteractiveRetry,
+  onRetry,
+  onResume,
+}: {
+  value: string
+  state: UrlImportState | null
+  onChange: (value: string) => void
+  onCancel: () => void
+  onStart: () => void
+  onInteractiveRetry: () => void
+  onRetry: () => void
+  onResume: () => void
+}) {
+  const valid = Boolean(normalizeUrlImportInput(value))
+  const running = state?.status === 'running'
+  return (
+    <div className="sheet-backdrop" role="presentation" onClick={running ? undefined : onCancel}>
+      <section className="sheet url-import-sheet" role="dialog" aria-modal="true" aria-label="从 URL 导入" onClick={(event) => event.stopPropagation()}>
+        <header className="sheet-header">
+          <div>
+            <h2>从 URL 导入</h2>
+            <p className="paste-detection">网页将转换为本地 Markdown，并保存到“文档/LightPage”</p>
+          </div>
+          <button className="icon-button" type="button" onClick={onCancel} aria-label="关闭"><X size={18} /></button>
+        </header>
+        <label className="url-import-field">
+          <span>网页地址</span>
+          <input
+            type="url"
+            value={value}
+            autoFocus={!state}
+            disabled={running}
+            placeholder="https://example.com/article"
+            onChange={(event) => onChange(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === 'Enter' && valid && !state) onStart()
+            }}
+          />
+        </label>
+        {state && (
+          <div className={`url-import-status ${state.status}`} aria-live="polite">
+            <div><strong>{state.progress.message}</strong><span>{Math.round(state.progress.progress)}%</span></div>
+            <div className="url-import-progress"><span style={{ width: `${state.progress.progress}%` }} /></div>
+          </div>
+        )}
+        {state?.status === 'needsInteraction' && state.outcome?.status === 'needsInteraction' && (
+          <p className="sheet-description">{state.outcome.interaction.provider}：{state.outcome.interaction.reason}。确认后会打开隔离的 Chrome/Edge 窗口。</p>
+        )}
+        {state?.status === 'failed' && state.outcome?.status === 'failed' && (
+          <p className="large-file-warning">{state.outcome.message}</p>
+        )}
+        <div className="error-actions">
+          {!state && <button className="primary-action compact" type="button" disabled={!valid} onClick={onStart}>开始导入</button>}
+          {state?.status === 'needsInteraction' && <button className="primary-action compact" type="button" onClick={onInteractiveRetry}>打开浏览器重试</button>}
+          {state?.status === 'failed' && state.outcome?.status === 'failed' && state.outcome.retryable && <button className="primary-action compact" type="button" onClick={onRetry}>重试</button>}
+          {running && state.interactive && <button className="secondary-action compact" type="button" onClick={onResume}>我已完成，继续</button>}
+          <button className="secondary-action compact" type="button" onClick={onCancel}>{running ? '取消导入' : '关闭'}</button>
+        </div>
+      </section>
+    </div>
+  )
+}
+
 function PasteOpenDialog({
   value,
   onChange,
@@ -4254,6 +4490,14 @@ function looksLikeHtml(content: string) {
   const sample = content.trim().slice(0, 4096)
   return /^(?:<!doctype\s+html|<html[\s>]|<head[\s>]|<body[\s>])/i.test(sample)
     || /<(?:article|section|main|div|p|h[1-6]|table|style)(?:\s[^>]*)?>/i.test(sample)
+}
+
+function sourceHost(value: string) {
+  try {
+    return new URL(value).hostname
+  } catch {
+    return value
+  }
 }
 
 function bytesToBase64(bytes: Uint8Array) {

@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { describe, expect, it, vi } from 'vitest'
-import { createDesktopPlatform, desktopDocumentId, extractLocalMarkdownImageSources } from './desktop-platform'
+import { createDesktopPlatform, desktopDocumentId, extractLocalMarkdownImageSources, normalizeUrlImportInput } from './desktop-platform'
 import type { DesktopOpenRequest, DesktopPlatformDependencies } from './desktop-platform'
 
 function createDependencies(overrides: Partial<DesktopPlatformDependencies> = {}): DesktopPlatformDependencies {
@@ -61,6 +61,42 @@ describe('desktop platform adapter', () => {
       path: 'C:\\文档\\notes.md',
       source: 'picker',
     })
+  })
+
+  it('starts, resumes and cancels URL imports through constrained Rust commands', async () => {
+    const invokeMock = vi.fn(async (command) => {
+      if (command === 'import_url') return { status: 'cancelled' }
+      return undefined
+    }) as DesktopPlatformDependencies['invoke']
+    const platform = createDesktopPlatform(createDependencies({ invoke: invokeMock }))
+
+    await expect(platform.importUrl('job-1', 'https://example.com', false)).resolves.toEqual({ status: 'cancelled' })
+    await platform.resumeUrlImport('job-1')
+    await platform.cancelUrlImport('job-1')
+    await platform.clearUrlImportProfile()
+
+    expect(invokeMock).toHaveBeenNthCalledWith(1, 'import_url', { jobId: 'job-1', url: 'https://example.com', interactive: false })
+    expect(invokeMock).toHaveBeenNthCalledWith(2, 'resume_url_import', { jobId: 'job-1' })
+    expect(invokeMock).toHaveBeenNthCalledWith(3, 'cancel_url_import', { jobId: 'job-1' })
+    expect(invokeMock).toHaveBeenNthCalledWith(4, 'clear_url_import_profile')
+  })
+
+  it('validates URL import input and relays progress events', async () => {
+    expect(normalizeUrlImportInput(' https://example.com/a#section ')).toBe('https://example.com/a')
+    expect(normalizeUrlImportInput('file:///C:/secret.md')).toBe('')
+    expect(normalizeUrlImportInput('not a url')).toBe('')
+
+    let progressHandler: ((payload: { phase: string }) => void) | undefined
+    const listen = vi.fn(async (_event: string, handler: (payload: { phase: string }) => void) => {
+      progressHandler = handler
+      return () => undefined
+    }) as DesktopPlatformDependencies['listen']
+    const received: string[] = []
+    const platform = createDesktopPlatform(createDependencies({ listen }))
+    await platform.listenForUrlImportProgress((progress) => received.push(progress.phase))
+    progressHandler?.({ phase: 'validating' })
+    expect(listen).toHaveBeenCalledWith('url-import-progress', expect.any(Function))
+    expect(received).toEqual(['validating'])
   })
 
   it('serializes file association events', async () => {

@@ -10,9 +10,13 @@ use tauri::{Emitter, Manager};
 use tauri_plugin_fs::FsExt;
 
 mod system_integration;
+mod url_import;
 mod workspace;
 
 use system_integration::{add_recent_document, get_html_open_with, set_html_open_with};
+use url_import::{
+    cancel_url_import, clear_url_import_profile, import_url, resume_url_import, UrlImportState,
+};
 use workspace::{
     cancel_workspace_index, list_workspace_children, prepare_workspace_open, register_workspace,
     remove_workspace, restore_workspaces, search_workspace, start_workspace_index,
@@ -64,7 +68,7 @@ struct PendingOpenRequests(Mutex<VecDeque<DesktopOpenRequest>>);
 
 fn validate_source(source: &str) -> Result<&str, String> {
     match source {
-        "launch" | "association" | "picker" | "workspace" | "drop" => Ok(source),
+        "launch" | "association" | "picker" | "workspace" | "drop" | "url" => Ok(source),
         _ => Err("不支持的文件来源".to_string()),
     }
 }
@@ -340,6 +344,7 @@ pub fn run() {
         .plugin(tauri_plugin_window_state::Builder::default().build())
         .manage(PendingOpenRequests::default())
         .manage(DesktopWorkspaceState::default())
+        .manage(UrlImportState::default())
         .setup(|app| {
             let requests = requests_from_args(
                 env::args_os()
@@ -374,7 +379,11 @@ pub fn run() {
             search_workspace,
             set_html_open_with,
             get_html_open_with,
-            add_recent_document
+            add_recent_document,
+            import_url,
+            resume_url_import,
+            cancel_url_import,
+            clear_url_import_profile
         ]);
 
     builder

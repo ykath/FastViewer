@@ -8,6 +8,8 @@ export type DocumentRecord = {
   fileSize: number
   sourceType: string
   sourceUri?: string
+  sourceUrl?: string
+  sourceAdapter?: 'generic' | 'x' | 'youtube' | 'hn' | string
   content: string
   rawBase64?: string
   archiveRelativePath?: string

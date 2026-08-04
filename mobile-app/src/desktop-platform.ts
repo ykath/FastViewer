@@ -18,7 +18,47 @@ export type DesktopOpenRequest = {
   path: string
   fileName: string
   size: number
-  source: 'launch' | 'association' | 'picker' | 'workspace' | 'drop'
+  source: 'launch' | 'association' | 'picker' | 'workspace' | 'drop' | 'url'
+}
+
+export type UrlImportProgress = {
+  jobId: string
+  phase: 'browser' | 'loading' | 'interaction' | 'extracting' | 'validating' | 'media' | 'saving' | 'complete' | string
+  message: string
+  progress: number
+}
+
+export type UrlImportInteraction = {
+  kind: 'login' | 'cloudflare' | 'recaptcha' | 'hcaptcha' | 'captcha' | 'quality' | string
+  provider: string
+  reason: string
+}
+
+export type UrlImportOutcome =
+  | {
+      status: 'ok'
+      requestedUrl: string
+      canonicalUrl: string
+      adapter: 'generic' | 'x' | 'youtube' | 'hn'
+      title: string
+      outputPath: string
+      downloadedImages: number
+      warnings: string[]
+      openRequest: DesktopOpenRequest
+    }
+  | { status: 'needsInteraction'; requestedUrl: string; adapter: string; interaction: UrlImportInteraction }
+  | { status: 'failed'; code: string; message: string; retryable: boolean }
+  | { status: 'cancelled' }
+
+export function normalizeUrlImportInput(value: string) {
+  try {
+    const parsed = new URL(value.trim())
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return ''
+    parsed.hash = ''
+    return parsed.toString()
+  } catch {
+    return ''
+  }
 }
 
 export type WorkspaceRegistration = Pick<WorkspaceRecord, 'id' | 'name' | 'rootPath' | 'exclusions'>
@@ -45,6 +85,19 @@ export type DesktopImageFile = {
 type UnlistenFn = () => void
 type RelativeResourcePaths = Record<string, string>
 
+type DesktopDevelopmentMock = {
+  invoke: DesktopPlatformDependencies['invoke']
+  listen: DesktopPlatformDependencies['listen']
+  readFile: DesktopPlatformDependencies['readFile']
+  listenForDrops?: (handler: (paths: string[]) => void) => Promise<UnlistenFn>
+}
+
+declare global {
+  interface Window {
+    __LIGHTPAGE_DESKTOP_MOCK__?: DesktopDevelopmentMock
+  }
+}
+
 const MAX_RELATIVE_IMAGES = 64
 const DOCUMENT_READ_RETRY_DELAYS_MS = [0, 80, 220] as const
 
@@ -59,20 +112,36 @@ export type DesktopPlatformDependencies = {
   joinPath: typeof join
   openUrl: typeof openUrl
   revealItemInDir: typeof revealItemInDir
+  listenForDrops?: (handler: (paths: string[]) => void) => Promise<UnlistenFn>
+}
+
+function developmentMock() {
+  return import.meta.env.DEV ? window.__LIGHTPAGE_DESKTOP_MOCK__ : undefined
 }
 
 const defaultDependencies: DesktopPlatformDependencies = {
-  isTauri,
-  invoke,
-  listen: <T>(event: string, handler: (payload: T) => void) =>
-    listen<T>(event, ({ payload }) => handler(payload)),
+  isTauri: () => isTauri() || Boolean(developmentMock()),
+  invoke: <T>(command: string, args?: Record<string, unknown>) =>
+    developmentMock()?.invoke<T>(command, args) ?? invoke<T>(command, args),
+  listen: <T>(event: string, handler: (payload: T) => void) => {
+    const mock = developmentMock()
+    return mock ? mock.listen(event, handler) : listen<T>(event, ({ payload }) => handler(payload))
+  },
   openDialog: open,
   saveDialog: save,
-  readFile,
+  readFile: ((path: string) => developmentMock()?.readFile(path) ?? readFile(path)) as typeof readFile,
   writeFile,
   joinPath: join,
   openUrl,
   revealItemInDir,
+  listenForDrops: async (handler) => {
+    const mock = developmentMock()
+    if (mock) return mock.listenForDrops?.(handler) ?? (() => undefined)
+    const { getCurrentWebview } = await import('@tauri-apps/api/webview')
+    return getCurrentWebview().onDragDropEvent((event) => {
+      if (event.payload.type === 'drop') handler(event.payload.paths)
+    })
+  },
 }
 
 export function createDesktopPlatform(dependencies: DesktopPlatformDependencies = defaultDependencies) {
@@ -108,6 +177,31 @@ export function createDesktopPlatform(dependencies: DesktopPlatformDependencies 
       })
       if (!selected || Array.isArray(selected)) return null
       return prepareRequest(selected, 'picker')
+    },
+
+    async importUrl(jobId: string, url: string, interactive = false): Promise<UrlImportOutcome> {
+      if (!isDesktop()) return { status: 'failed', code: 'UNSUPPORTED_PLATFORM', message: 'URL 导入仅支持 Windows', retryable: false }
+      return dependencies.invoke<UrlImportOutcome>('import_url', { jobId, url, interactive })
+    },
+
+    async resumeUrlImport(jobId: string): Promise<void> {
+      if (!isDesktop()) return
+      await dependencies.invoke<void>('resume_url_import', { jobId })
+    },
+
+    async cancelUrlImport(jobId: string): Promise<void> {
+      if (!isDesktop()) return
+      await dependencies.invoke<void>('cancel_url_import', { jobId })
+    },
+
+    listenForUrlImportProgress(handler: (progress: UrlImportProgress) => void): Promise<UnlistenFn> {
+      if (!isDesktop()) return Promise.resolve(() => undefined)
+      return dependencies.listen<UrlImportProgress>('url-import-progress', handler)
+    },
+
+    async clearUrlImportProfile(): Promise<void> {
+      if (!isDesktop()) return
+      await dependencies.invoke<void>('clear_url_import_profile')
     },
 
     async prepareDocument(path: string, source: DesktopOpenRequest['source'] = 'drop') {
@@ -228,10 +322,7 @@ export function createDesktopPlatform(dependencies: DesktopPlatformDependencies 
 
     async listenForDrops(handler: (paths: string[]) => void): Promise<UnlistenFn> {
       if (!isDesktop()) return () => undefined
-      const { getCurrentWebview } = await import('@tauri-apps/api/webview')
-      return getCurrentWebview().onDragDropEvent((event) => {
-        if (event.payload.type === 'drop') handler(event.payload.paths)
-      })
+      return dependencies.listenForDrops?.(handler) ?? (() => undefined)
     },
 
     async classifyDropPaths(paths: string[]): Promise<DesktopDropClassification> {

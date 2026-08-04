@@ -29,6 +29,11 @@
   "bundle": {
     "active": true,
     "targets": ["nsis"],
+    "externalBin": ["binaries/lightpage-url-importer"],
+    "resources": {
+      "../url-importer/THIRD_PARTY_NOTICES.md": "licenses/url-importer/THIRD_PARTY_NOTICES.md",
+      "../url-importer/LICENSE.baoyu-url-to-markdown": "licenses/url-importer/LICENSE.baoyu-url-to-markdown"
+    },
     "publisher": "FastViewer",
     "category": "Productivity",
     "shortDescription": "轻量 Markdown 与 HTML 阅读器",
@@ -57,4 +62,3 @@
     }
   }
 }
-

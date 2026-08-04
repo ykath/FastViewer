@@ -65,13 +65,19 @@ export default function SettingsPage({ settings, resolvedTheme, onSetSettings }:
           })
         }} />}
         {isDesktop && <SettingRow icon={<BookOpen size={19} />} title="Windows 最近文档" description="将成功打开的本地文件加入系统最近文档" value={settings.desktopRecentDocuments ? '开启' : '关闭'} onClick={() => onSetSettings({ ...settings, desktopRecentDocuments: !settings.desktopRecentDocuments })} />}
+        {isDesktop && <SettingRow icon={<ShieldCheck size={19} />} title="URL 导入登录数据" description="清除隔离浏览器中的 Cookie 和网站数据" value="清除" onClick={() => {
+          if (!window.confirm('确定清除 URL 导入专用浏览器中的登录 Cookie 和网站数据吗？')) return
+          void desktopPlatform.clearUrlImportProfile()
+            .then(() => window.alert('URL 导入登录数据已清除。'))
+            .catch((error) => window.alert(error instanceof Error ? error.message : '清除失败'))
+        }} />}
         <SettingRow icon={<BookOpen size={19} />} title="使用帮助" description="文件打开、安全权限与导出说明" value="查看" onClick={() => setInfoSheet('help')} />
         <SettingRow icon={<ShieldCheck size={19} />} title="隐私说明" description="文档默认仅在本机处理，不自动上传" value="查看" onClick={() => setInfoSheet('privacy')} />
         <SettingRow icon={<FileCode2 size={19} />} title="性能诊断" description="仅保存在本机的最近耗时记录" value={`${performanceMetrics.length} 条`} onClick={() => setInfoSheet('performance')} />
-        <SettingRow icon={<FileCode2 size={19} />} title="版本" description="HTML 与 Markdown 阅读一致性优化版本" value="1.5.1" />
+        <SettingRow icon={<FileCode2 size={19} />} title="版本" description="Windows URL 导入版本" value="1.6.0" />
       </section>
-      {infoSheet === 'help' && <InfoSheet title="使用帮助" onClose={() => setInfoSheet(null)}><p>可从首页、文件管理器或其他 App 打开 Markdown、HTML、ZIP 与 RAR；10 MB 以上文件默认进入源码模式。</p><p>HTML 默认禁用脚本、表单、弹窗和远程资源。同目录图片与 CSS 可在当前文件的“HTML 权限”中授权。</p><p>文件菜单支持真实 PDF、原始文件，以及当前区域、全文或分页图片导出。</p></InfoSheet>}
-      {infoSheet === 'privacy' && <InfoSheet title="隐私说明" onClose={() => setInfoSheet(null)}><p>文档正文、原始字节、阅读位置与搜索内容默认仅保存在本机，不会自动上传。</p><p>远程 HTML 资源仅在你明确允许时加载；外部链接、系统分享和目录授权均由你主动触发。</p><p>删除记录会清理正文与对应资源缓存；本地性能日志不包含文档正文。</p></InfoSheet>}
+      {infoSheet === 'help' && <InfoSheet title="使用帮助" onClose={() => setInfoSheet(null)}><p>可从首页、文件管理器或其他 App 打开 Markdown、HTML、ZIP 与 RAR；Windows 还可将网页 URL 转换成本地 Markdown。</p><p>URL 快照保存在“文档/LightPage/url-to-markdown”，图片会尽量下载到文章的 imgs 目录；登录或验证页面可使用隔离浏览器重试。</p><p>HTML 默认禁用脚本、表单、弹窗和远程资源；10 MB 以上文件默认进入源码模式。</p></InfoSheet>}
+      {infoSheet === 'privacy' && <InfoSheet title="隐私说明" onClose={() => setInfoSheet(null)}><p>文档正文、原始字节、阅读位置与搜索内容默认仅保存在本机，不会自动上传。</p><p>URL 导入会访问用户输入的网站；本地提取不足时可能请求 Defuddle 服务重新读取该公开 URL。交互登录数据只保存在 LightPage 隔离浏览器目录中，可随时清除。</p><p>删除文件库记录不会删除“文档”目录中的 URL 快照；本地性能日志不包含文档正文。</p></InfoSheet>}
       {infoSheet === 'performance' && (
         <Sheet title="本地性能诊断" onClose={() => setInfoSheet(null)}>
           <p className="sheet-description">只记录操作名称、耗时和文件规模，不含文档正文，也不会自动发送。</p>

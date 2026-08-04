@@ -106,6 +106,10 @@
   gap: 10px;
 }
 
+.quick-actions.with-url {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
 .primary-action,
 .secondary-action {
   min-height: 48px;
@@ -1997,6 +2001,76 @@ mark.annotation-highlight {
 .paste-input:focus {
   outline: 2px solid color-mix(in srgb, var(--accent) 35%, transparent);
   border-color: var(--accent);
+}
+
+.url-import-sheet {
+  max-width: 620px;
+}
+
+.url-import-field {
+  display: grid;
+  gap: 8px;
+  color: var(--text-muted);
+  font-size: 0.85rem;
+}
+
+.url-import-field input {
+  width: 100%;
+  height: 46px;
+  padding: 0 13px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  outline: 0;
+  color: var(--text);
+  background: var(--surface-muted);
+  font: inherit;
+}
+
+.url-import-field input:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 16%, transparent);
+}
+
+.url-import-status {
+  display: grid;
+  gap: 8px;
+  margin-top: 14px;
+  padding: 12px;
+  border-radius: 10px;
+  background: var(--surface-muted);
+}
+
+.url-import-status > div:first-child {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  color: var(--text);
+  font-size: 0.86rem;
+}
+
+.url-import-progress {
+  height: 7px;
+  overflow: hidden;
+  border-radius: 99px;
+  background: var(--border);
+}
+
+.url-import-progress span {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--accent);
+  transition: width 180ms ease;
+}
+
+@media (max-width: 760px) {
+  .quick-actions.with-url {
+    grid-template-columns: 1fr 1fr;
+  }
+
+  .quick-actions.with-url > :first-child {
+    grid-column: 1 / -1;
+  }
 }
 
 .external-resource-banner {
