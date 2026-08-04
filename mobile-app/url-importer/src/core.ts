@@ -87,6 +87,7 @@ export function renderMarkdownDocument(input: {
   siteName?: string
   publishedAt?: string
   adapter: AdapterName
+  warnings?: string[]
   markdown: string
 }): string {
   const fields = [
@@ -97,6 +98,7 @@ export function renderMarkdownDocument(input: {
     input.siteName ? `siteName: ${yamlString(input.siteName)}` : '',
     input.publishedAt ? `publishedAt: ${yamlString(input.publishedAt)}` : '',
     `adapter: ${yamlString(input.adapter)}`,
+    input.warnings?.length ? `warnings: [${input.warnings.map(yamlString).join(', ')}]` : '',
     `capturedAt: ${yamlString(new Date().toISOString())}`,
   ].filter(Boolean)
   const body = input.markdown.trim()

@@ -40,9 +40,10 @@ describe('URL importer core', () => {
 
   test('renders source metadata and checks quality', () => {
     const markdown = renderMarkdownDocument({
-      title: 'Example', requestedUrl: 'https://example.com/a', adapter: 'generic', markdown: 'Long useful paragraph. '.repeat(12),
+      title: 'Example', requestedUrl: 'https://example.com/a', adapter: 'generic', warnings: ['X 提取已回退'], markdown: 'Long useful paragraph. '.repeat(12),
     })
     expect(markdown).toContain('requestedUrl: "https://example.com/a"')
+    expect(markdown).toContain('warnings: ["X 提取已回退"]')
     expect(assessQuality(markdown, 'Example', 'generic').acceptable).toBe(true)
     expect(assessQuality('Please sign in to continue', 'Login', 'generic').acceptable).toBe(false)
     expect(assessQuality(`# Unrelated\n\n${'useful article '.repeat(20)}`, 'Expected title', 'generic').reason).toContain('标题')

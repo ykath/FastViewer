@@ -26,6 +26,23 @@ beforeEach(() => {
 })
 
 describe('MarkdownReader', () => {
+  it('hides YAML frontmatter instead of rendering it as a heading', () => {
+    const { container } = render(
+      <MarkdownReader
+        content={'---\ntitle: "Example"\nurl: "https://example.com"\nadapter: "generic"\n---\n\n# Example\n\nBody'}
+        contentRef={createRef<HTMLElement>()}
+        themeMode="light"
+      />,
+    )
+
+    expect(container.textContent).not.toContain('title:')
+    expect(container.textContent).not.toContain('adapter:')
+    expect(container.querySelectorAll('h1')).toHaveLength(1)
+    expect(container.querySelector('h1')?.textContent).toBe('Example')
+    expect(container.querySelector('h2')).toBeNull()
+    expect(container.textContent).toContain('Body')
+  })
+
   it('为连续的数字编号参考文献保留单换行，同时不改变普通段落的软换行', () => {
     const content = `## 参考文献
 

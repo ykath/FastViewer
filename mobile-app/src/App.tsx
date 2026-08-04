@@ -1091,7 +1091,10 @@ function App() {
         })
         setUrlImport(null)
         setUrlDraft(null)
-        const warning = outcome.warnings.length ? `，${outcome.warnings.length} 项资源警告` : ''
+        const warningDetails = outcome.warnings.join('；')
+        const warning = warningDetails
+          ? `；警告：${warningDetails.length > 180 ? `${warningDetails.slice(0, 177)}...` : warningDetails}`
+          : ''
         showToast(`网页已导入，已本地化 ${outcome.downloadedImages} 张图片${warning}`, outcome.warnings.length ? 'warning' : 'success')
         return
       }

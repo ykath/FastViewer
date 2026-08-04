@@ -14,6 +14,7 @@ import {
   renderMarkdownDocument,
   type AdapterName,
 } from './core'
+import { renderXSnapshot, type XPageSnapshot } from './x-content'
 
 type Arguments = {
   url: string
@@ -194,6 +195,16 @@ class CdpSession {
     await this.evaluate('scrollTo(0, 0)').catch(() => undefined)
   }
 
+  async waitFor(expression: string, timeoutMs: number) {
+    const startedAt = Date.now()
+    while (Date.now() - startedAt < timeoutMs) {
+      const ready = await this.evaluate<boolean>(expression).catch(() => false)
+      if (ready) return true
+      await sleep(250)
+    }
+    return false
+  }
+
   async close() {
     await this.command('Target.closeTarget', { targetId: this.targetId }).catch(() => undefined)
     this.socket.close()
@@ -345,24 +356,78 @@ async function extractHackerNews(session: CdpSession) {
   })()`)
 }
 
+const X_READY_SCRIPT = String.raw`(() => {
+  const statusId = location.pathname.match(/\/status\/(\d+)/)?.[1];
+  const articles = Array.from(document.querySelectorAll('article[data-testid="tweet"],article'));
+  const tweet = statusId
+    ? articles.find((article) => article.getAttribute('data-tweet-id') === statusId || article.querySelector('a[href*="/status/' + statusId + '"]'))
+    : articles[0];
+  return Boolean(tweet?.querySelector('[data-testid="tweetText"],[dir="auto"],meta[itemprop="articleBody"],[data-testid="tweetPhoto"] img,a[aria-label="Image"] img,video[poster],[data-testid^="card.layout"] img,[itemtype$="/ImageObject"] meta[itemprop="contentUrl"]'));
+})()`
+
 async function extractX(session: CdpSession) {
-  return session.evaluate<{ title: string; canonicalUrl?: string; author?: string; siteName?: string; publishedAt?: string; markdown: string; warnings: string[] }>(String.raw`(() => {
+  const snapshot = await session.evaluate<XPageSnapshot>(String.raw`(() => {
     const meta = (...selectors) => selectors.map((selector) => document.querySelector(selector)?.getAttribute('content')?.trim()).find(Boolean);
-    const sections = [], seen = new Set();
-    for (const tweet of Array.from(document.querySelectorAll('article[data-testid="tweet"],article')).slice(0,100)) {
-      const text = tweet.querySelector('[data-testid="tweetText"]')?.textContent?.trim();
-      if (!text || seen.has(text)) continue;
-      seen.add(text);
-      const user = tweet.querySelector('[data-testid="User-Name"]')?.textContent?.replace(/\s+/g,' ').trim() || 'X 用户';
-      const time = tweet.querySelector('time')?.getAttribute('datetime');
-      sections.push('## ' + user + (time ? ' · ' + time : ''), '', text);
-      for (const image of Array.from(tweet.querySelectorAll('img'))) {
-        const source = image.currentSrc || image.getAttribute('src');
-        if (source && /^https?:/i.test(source) && !/profile_images|emoji/i.test(source)) sections.push('', '![' + (image.alt || '') + '](' + source + ')');
+    const targetStatusId = location.pathname.match(/\/status\/(\d+)/)?.[1];
+    const articles = Array.from(document.querySelectorAll('article[data-testid="tweet"],article'));
+    const exactTweet = targetStatusId
+      ? articles.find((article) => article.getAttribute('data-tweet-id') === targetStatusId || article.querySelector('a[href*="/status/' + targetStatusId + '"]'))
+      : articles[0];
+    const tweet = exactTweet || (!targetStatusId ? articles[0] : null);
+    const userName = tweet?.querySelector('[data-testid="User-Name"]');
+    const schemaAuthor = tweet?.querySelector('[itemprop="author"]');
+    const schemaName = schemaAuthor?.querySelector('meta[itemprop="name"]')?.getAttribute('content') || '';
+    const schemaHandle = schemaAuthor?.querySelector('meta[itemprop="alternateName"]')?.getAttribute('content') || '';
+    const user = (userName?.innerText || userName?.textContent || [schemaName, schemaHandle ? '@' + schemaHandle.replace(/^@/, '') : ''].filter(Boolean).join(' ') || '').replace(/\s+/g, ' ').trim();
+    const profileLink = Array.from(userName?.querySelectorAll('a[href]') || []).find((link) => /^\/[A-Za-z0-9_]+$/.test(link.getAttribute('href') || ''));
+    const schemaProfile = schemaAuthor?.querySelector('meta[itemprop="url"]')?.getAttribute('content');
+    const time = tweet?.querySelector('time')?.getAttribute('datetime') || tweet?.querySelector('meta[itemprop="datePublished"]')?.getAttribute('content') || undefined;
+    const textElement = tweet?.querySelector('[data-testid="tweetText"]');
+    const schemaText = tweet?.querySelector('meta[itemprop="articleBody"]')?.getAttribute('content') || '';
+    const visibleCandidates = Array.from(tweet?.querySelectorAll('[dir="auto"]') || [])
+      .map((element) => element.innerText || element.textContent || '')
+      .filter(Boolean);
+    const schemaPrefix = schemaText.slice(0, Math.min(80, schemaText.length));
+    const visibleText = (schemaPrefix ? visibleCandidates.find((value) => value.startsWith(schemaPrefix)) : '')
+      || visibleCandidates.sort((left, right) => right.length - left.length)[0]
+      || '';
+    const text = textElement?.innerText || textElement?.textContent || visibleText || schemaText;
+    const selectedMedia = tweet
+      ? [
+          ...Array.from(tweet.querySelectorAll('[itemtype$="/ImageObject"] meta[itemprop="contentUrl"]')),
+          ...Array.from(tweet.querySelectorAll('[data-testid="tweetPhoto"] img,[data-testid^="card.layout"] img,a[aria-label="Image"] img,video[poster]')),
+        ]
+      : [];
+    const media = selectedMedia.flatMap((element) => {
+      if (element.tagName.toLowerCase() === 'video') {
+        const source = element.getAttribute('poster');
+        return source ? [{ source, alt: '视频封面', kind: 'videoPoster' }] : [];
       }
-    }
-    return { title: meta('meta[property="og:title"]','meta[name="twitter:title"]') || document.title || 'X 内容', canonicalUrl: location.href, siteName: 'X', markdown: sections.join('\n').trim(), warnings: [] };
+      if (element.tagName.toLowerCase() === 'meta') {
+        const source = element.getAttribute('content');
+        const imageObject = element.closest('[itemtype$="/ImageObject"]');
+        const alt = imageObject?.querySelector('meta[itemprop="name"]')?.getAttribute('content') || '推文图片';
+        return source ? [{ source, alt, kind: 'image' }] : [];
+      }
+      const srcset = element.getAttribute('srcset');
+      const largestSrcset = srcset?.split(',').map((candidate) => candidate.trim().split(/\s+/)[0]).filter(Boolean).at(-1);
+      const source = largestSrcset || element.currentSrc || element.getAttribute('src');
+      return source ? [{ source, alt: element.getAttribute('alt') || '推文图片', kind: 'image' }] : [];
+    });
+    return {
+      title: meta('meta[property="og:title"]','meta[name="twitter:title"]') || document.title || 'X 内容',
+      canonicalUrl: location.href,
+      author: profileLink ? new URL(profileLink.getAttribute('href'), location.href).toString() : schemaProfile || meta('meta[name="twitter:creator"]'),
+      siteName: 'X',
+      publishedAt: time,
+      targetStatusId,
+      targetMatched: Boolean(exactTweet),
+      user,
+      text,
+      media,
+    };
   })()`)
+  return renderXSnapshot(snapshot)
 }
 
 type PlayerResponse = {
@@ -410,7 +475,54 @@ async function extractYouTube(session: CdpSession, finalUrl: string) {
   }
 }
 
-async function downloadImages(markdown: string, pageUrl: string, articleDirectory: string) {
+async function fetchImagePayload(url: string, maxBytes: number, session?: CdpSession) {
+  let directError: unknown
+  try {
+    const response = await fetch(url, { redirect: 'follow' })
+    if (!response.ok) throw new Error(`HTTP ${response.status}`)
+    const declaredLength = Number(response.headers.get('content-length') || 0)
+    if (declaredLength > maxBytes) throw new Error('图片超过本地化大小限制')
+    return {
+      contentType: response.headers.get('content-type') || '',
+      declaredLength,
+      bytes: new Uint8Array(await response.arrayBuffer()),
+    }
+  } catch (error) {
+    directError = error
+  }
+
+  if (!session) throw directError
+  const browserResult = await session.evaluate<{ ok: boolean; status?: number; contentType?: string; declaredLength?: number; base64?: string; error?: string }>(String.raw`(async () => {
+    try {
+      const response = await fetch(${JSON.stringify(url)}, { credentials: 'omit', redirect: 'follow' });
+      if (!response.ok) return { ok: false, status: response.status, error: 'HTTP ' + response.status };
+      const declaredLength = Number(response.headers.get('content-length') || 0);
+      if (declaredLength > ${maxBytes}) return { ok: false, error: '图片超过本地化大小限制' };
+      const bytes = new Uint8Array(await response.arrayBuffer());
+      let binary = '';
+      for (let offset = 0; offset < bytes.length; offset += 32768) binary += String.fromCharCode(...bytes.subarray(offset, offset + 32768));
+      return {
+        ok: true,
+        contentType: response.headers.get('content-type') || '',
+        declaredLength,
+        base64: btoa(binary),
+      };
+    } catch (error) {
+      return { ok: false, error: error instanceof Error ? error.message : String(error) };
+    }
+  })()`)
+  if (!browserResult?.ok || typeof browserResult.base64 !== 'string') {
+    const directMessage = directError instanceof Error ? directError.message : String(directError || '下载失败')
+    throw new Error(`${directMessage}；浏览器回退失败：${browserResult?.error || browserResult?.status || '未知错误'}`)
+  }
+  return {
+    contentType: browserResult.contentType || '',
+    declaredLength: browserResult.declaredLength || 0,
+    bytes: new Uint8Array(Buffer.from(browserResult.base64, 'base64')),
+  }
+}
+
+async function downloadImages(markdown: string, pageUrl: string, articleDirectory: string, session?: CdpSession) {
   const pattern = /!\[([^\]]*)]\((?:<([^>\r\n]+)>|([^\s)\r\n]+))(?:\s+["'][^"'\r\n]*["'])?\)/g
   const allMatches = Array.from(markdown.matchAll(pattern))
   const matches = allMatches.slice(0, 64)
@@ -427,9 +539,8 @@ async function downloadImages(markdown: string, pageUrl: string, articleDirector
     try {
       const resolvedUrl = new URL(rawUrl, pageUrl)
       if (!/^https?:$/.test(resolvedUrl.protocol)) continue
-      const response = await fetch(resolvedUrl, { redirect: 'follow' })
-      if (!response.ok) throw new Error(`HTTP ${response.status}`)
-      const contentType = response.headers.get('content-type') || ''
+      const payload = await fetchImagePayload(resolvedUrl.toString(), Math.min(20 * 1024 * 1024, 64 * 1024 * 1024 - totalBytes), session)
+      const contentType = payload.contentType
       const sourceExtension = extname(resolvedUrl.pathname).toLowerCase()
       if (!contentType.toLowerCase().startsWith('image/') && !/^\.(png|jpe?g|gif|webp)$/i.test(sourceExtension)) {
         throw new Error('响应不是支持的图片格式')
@@ -437,11 +548,11 @@ async function downloadImages(markdown: string, pageUrl: string, articleDirector
       if (/svg|avif|bmp|tiff/i.test(contentType) || /^\.(svg|avif|bmp|tiff?)$/i.test(sourceExtension)) {
         throw new Error('图片格式不支持本地化')
       }
-      const declaredLength = Number(response.headers.get('content-length') || 0)
+      const declaredLength = payload.declaredLength
       if (declaredLength > 20 * 1024 * 1024 || totalBytes + declaredLength > 64 * 1024 * 1024) {
         throw new Error('图片超过本地化大小限制')
       }
-      const bytes = new Uint8Array(await response.arrayBuffer())
+      const bytes = payload.bytes
       if (bytes.length > 20 * 1024 * 1024 || totalBytes + bytes.length > 64 * 1024 * 1024) throw new Error('图片超过本地化大小限制')
       const extension = /^\.(png|jpe?g|gif|webp)$/i.test(sourceExtension)
         ? sourceExtension.replace('.jpeg', '.jpg')
@@ -474,6 +585,7 @@ async function run(options: Arguments) {
     progress('loading', `正在加载 ${requested.hostname}`, 15)
     await session.navigate(requested.toString(), options.timeoutMs)
     await session.scroll()
+    if (adapter === 'x') await session.waitFor(X_READY_SCRIPT, Math.min(options.timeoutMs, 12_000))
     const initial = await session.evaluate<{ title: string; text: string; url: string }>('({title:document.title,text:document.body?.innerText||"",url:location.href})')
     if (/ERR_[A-Z_]+|This site can.?t be reached|无法访问此网站|网页无法打开|DNS_PROBE_/i.test(`${initial.title}\n${initial.text}`)) {
       throw new Error('网络请求失败，网页无法访问')
@@ -486,6 +598,7 @@ async function run(options: Arguments) {
       progress('interaction', '请在浏览器中完成登录或验证，然后返回 LightPage 继续', 25)
       await waitForInteraction(session, options.interactionTimeoutMs)
       await session.scroll()
+      if (adapter === 'x') await session.waitFor(X_READY_SCRIPT, Math.min(options.timeoutMs, 12_000))
     }
 
     progress('extracting', `正在使用 ${adapter} 适配器提取正文`, 40)
@@ -500,6 +613,7 @@ async function run(options: Arguments) {
     progress('validating', '正在校验标题、正文和页面质量', 60)
     let quality = assessQuality(page.markdown, page.title, adapter)
     if (!quality.acceptable && adapter !== 'generic') {
+      const adapterWarnings = page.warnings
       const fallback = await extractGeneric(session, finalUrl)
       const fallbackQuality = assessQuality(fallback.markdown, fallback.title, 'generic')
       if (fallbackQuality.acceptable) {
@@ -510,7 +624,11 @@ async function run(options: Arguments) {
           requestedUrl: requested.toString(),
           finalUrl,
           adapter,
-          warnings: [...fallback.warnings, `${failedAdapter} 专项提取未通过质量校验，已回退通用正文提取`],
+          warnings: [
+            ...adapterWarnings,
+            ...fallback.warnings,
+            `${failedAdapter} 专项提取未通过质量校验（${quality.reason || '原因未知'}），已回退通用正文提取`,
+          ],
         }
         quality = fallbackQuality
       }
@@ -525,23 +643,24 @@ async function run(options: Arguments) {
     }
     if (!quality.acceptable) throw new Error(quality.reason || '未能提取有效正文')
 
-    let documentMarkdown = renderMarkdownDocument({
-      title: page.title,
-      requestedUrl: page.requestedUrl,
-      canonicalUrl: page.canonicalUrl || page.finalUrl,
-      author: page.author,
-      siteName: page.siteName,
-      publishedAt: page.publishedAt,
-      adapter,
-      markdown: page.markdown,
-    })
     const stagingDirectory = join(options.stagingRoot, `url-import-${process.pid}-${Date.now()}`)
     await mkdir(stagingDirectory, { recursive: true })
     const output = articleOutputPath(options.outputRoot, requested, page.title)
     try {
       progress('media', '正在下载网页图片', 75)
-      const localized = await downloadImages(documentMarkdown, page.finalUrl, stagingDirectory)
-      documentMarkdown = localized.markdown
+      const localized = await downloadImages(page.markdown, page.finalUrl, stagingDirectory, session)
+      const warnings = [...page.warnings, ...localized.warnings]
+      const documentMarkdown = renderMarkdownDocument({
+        title: page.title,
+        requestedUrl: page.requestedUrl,
+        canonicalUrl: page.canonicalUrl || page.finalUrl,
+        author: page.author,
+        siteName: page.siteName,
+        publishedAt: page.publishedAt,
+        adapter,
+        warnings,
+        markdown: localized.markdown,
+      })
       progress('saving', '正在保存本地 Markdown 快照', 90)
       const stagingMarkdown = join(stagingDirectory, basename(output.markdownPath))
       await writeFile(stagingMarkdown, documentMarkdown, 'utf8')
@@ -569,7 +688,7 @@ async function run(options: Arguments) {
         title: page.title,
         outputPath: outputMarkdown,
         downloadedImages: localized.downloadedImages,
-        warnings: [...page.warnings, ...localized.warnings],
+        warnings,
       }
     } finally {
       await rm(stagingDirectory, { recursive: true, force: true }).catch(() => undefined)

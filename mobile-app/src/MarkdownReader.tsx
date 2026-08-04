@@ -9,6 +9,7 @@ import remarkMath from 'remark-math'
 import katexStyles from 'katex/dist/katex.min.css?inline'
 import MermaidDiagram from './MermaidDiagram'
 import rehypeCodeHighlight from './rehype-code-highlight'
+import { splitMarkdownFrontmatter } from './markdown-frontmatter'
 import remarkDisplayMath from './remark-display-math'
 import remarkReferenceBreaks from './remark-reference-breaks'
 import type { ThemeMode } from './reader-settings'
@@ -33,10 +34,11 @@ const PROGRESSIVE_THRESHOLD = 1024 * 1024
 function MarkdownReader({ content, documentPath, resources, contentRef, themeMode, onOpenExternalLink, searchQuery = '', forceHeadingId, onPlanReady, onRenderChange }: MarkdownReaderProps) {
   const [asyncPlan, setAsyncPlan] = useState<RenderPlan | null>(null)
   const lastCompletedPlanRef = useRef<RenderPlan | null>(null)
-  const immediatePlan = useMemo(() => content.length < PROGRESSIVE_THRESHOLD ? createRenderPlan(content) : null, [content])
+  const renderContent = useMemo(() => splitMarkdownFrontmatter(content).body, [content])
+  const immediatePlan = useMemo(() => renderContent.length < PROGRESSIVE_THRESHOLD ? createRenderPlan(renderContent) : null, [renderContent])
   const previewPlan = useMemo(
-    () => content.length >= PROGRESSIVE_THRESHOLD ? createRenderPlan(content.slice(0, 128 * 1024)) : null,
-    [content],
+    () => renderContent.length >= PROGRESSIVE_THRESHOLD ? createRenderPlan(renderContent.slice(0, 128 * 1024)) : null,
+    [renderContent],
   )
   const completedPlan = immediatePlan ?? asyncPlan
   const plan = completedPlan ?? previewPlan
@@ -46,7 +48,7 @@ function MarkdownReader({ content, documentPath, resources, contentRef, themeMod
       return undefined
     }
     let cancelled = false
-    void buildRenderPlan(content).then((result) => {
+    void buildRenderPlan(renderContent).then((result) => {
       if (!cancelled) {
         const reconciled = reconcileRenderPlans(lastCompletedPlanRef.current, result)
         lastCompletedPlanRef.current = reconciled
@@ -54,7 +56,7 @@ function MarkdownReader({ content, documentPath, resources, contentRef, themeMod
       }
     })
     return () => { cancelled = true }
-  }, [content, immediatePlan])
+  }, [immediatePlan, renderContent])
   useEffect(() => {
     if (completedPlan) {
       lastCompletedPlanRef.current = completedPlan
@@ -66,10 +68,10 @@ function MarkdownReader({ content, documentPath, resources, contentRef, themeMod
     () => createMarkdownComponents(documentPath, resources, themeMode, onOpenExternalLink),
     // Content changes intentionally reset the per-render duplicate-heading counters.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [content, documentPath, resources, themeMode, onOpenExternalLink],
+    [renderContent, documentPath, resources, themeMode, onOpenExternalLink],
   )
   if (!plan) return <article className="reader-content markdown-body" ref={contentRef}>正在生成大文档阅读视图...</article>
-  if (content.length >= PROGRESSIVE_THRESHOLD) {
+  if (renderContent.length >= PROGRESSIVE_THRESHOLD) {
     return (
       <article className="reader-content markdown-body progressive-markdown" ref={contentRef} data-render-revision={plan.revision}>
         <style data-search-exclude="true">{katexStyles}</style>
@@ -101,7 +103,7 @@ function MarkdownReader({ content, documentPath, resources, contentRef, themeMod
         components={components}
         urlTransform={markdownUrlTransform}
       >
-        {content}
+        {renderContent}
       </ReactMarkdown>
     </article>
   )
@@ -117,7 +119,7 @@ export default memo(MarkdownReader, (previous, next) => {
     && previous.onPlanReady === next.onPlanReady
     && previous.onRenderChange === next.onRenderChange
   if (!sharedPropsEqual) return false
-  if (next.content.length < PROGRESSIVE_THRESHOLD) return true
+  if (splitMarkdownFrontmatter(next.content).body.length < PROGRESSIVE_THRESHOLD) return true
   return previous.searchQuery === next.searchQuery && previous.forceHeadingId === next.forceHeadingId
 })
 
