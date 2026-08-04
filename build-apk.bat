@@ -9,6 +9,7 @@ echo.
 
 set "PROJECT_ROOT=%~dp0"
 set "MOBILE_APP=%PROJECT_ROOT%mobile-app"
+set "OUTPUT_DIR=%MOBILE_APP%\release\android"
 set "JAVA_HOME=C:\Program Files\Eclipse Adoptium\jdk-21.0.11.10-hotspot"
 set "ANDROID_HOME=E:\CodexProjects\ClassUseCount\tools\android-sdk"
 set "ANDROID_SDK_ROOT=%ANDROID_HOME%"
@@ -21,8 +22,12 @@ if defined GRADLE_USER_HOME (
 )
 
 echo [1/5] Checking toolchain...
+where node >nul 2>&1 || (echo ERROR: node not found & exit /b 1)
+where npm >nul 2>&1 || (echo ERROR: npm not found & exit /b 1)
 where java >nul 2>&1 || (echo ERROR: java not found, check JAVA_HOME & exit /b 1)
 java -version 2>&1 | findstr /i "version" >nul || (echo ERROR: java version check failed & exit /b 1)
+for /f "usebackq tokens=*" %%I in (`node -e "console.log(require(process.argv[1]).version)" "%MOBILE_APP%\package.json"`) do set "APP_VERSION=%%I"
+if not defined APP_VERSION (echo ERROR: package version could not be read & exit /b 1)
 echo       JAVA_HOME = %JAVA_HOME%
 echo       ANDROID_HOME = %ANDROID_HOME%
 echo.
@@ -90,12 +95,16 @@ echo.
 
 set "APK_PATH=%MOBILE_APP%\android\app\build\outputs\apk\debug\app-debug.apk"
 set "LIGHTPAGE_APK=%MOBILE_APP%\android\app\build\outputs\apk\debug\LightPage.apk"
+set "RELEASE_APK=%OUTPUT_DIR%\LightPage_%APP_VERSION%_android-debug.apk"
 if exist "%APK_PATH%" (
     copy /Y "%APK_PATH%" "%LIGHTPAGE_APK%" >nul
     if %errorlevel% neq 0 (echo ERROR: failed to create LightPage.apk & exit /b 1)
+    if not exist "%OUTPUT_DIR%" mkdir "%OUTPUT_DIR%"
+    copy /Y "%APK_PATH%" "%RELEASE_APK%" >nul
+    if %errorlevel% neq 0 (echo ERROR: failed to collect versioned APK & exit /b 1)
     echo ============================================
     echo   BUILD SUCCESS
-    echo   APK: %LIGHTPAGE_APK%
+    echo   APK: %RELEASE_APK%
     echo   Original: %APK_PATH%
     echo ============================================
 ) else (

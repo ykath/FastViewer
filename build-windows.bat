@@ -57,24 +57,26 @@ echo [5/5] Collecting build artifacts...
 if not exist "%OUTPUT_DIR%" mkdir "%OUTPUT_DIR%"
 copy /Y "%MOBILE_APP%\src-tauri\target\release\lightpage.exe" "%OUTPUT_DIR%\LightPage.exe" >nul
 if %errorlevel% neq 0 (echo ERROR: LightPage.exe was not found & exit /b 1)
+copy /Y "%MOBILE_APP%\src-tauri\target\release\lightpage.exe" "%OUTPUT_DIR%\LightPage_%APP_VERSION%_windows-x64.exe" >nul
+if %errorlevel% neq 0 (echo ERROR: versioned LightPage.exe could not be created & exit /b 1)
 
 if not exist "%MOBILE_APP%\src-tauri\target\release\bundle\nsis\*setup.exe" (
   echo ERROR: NSIS installer was not found
   exit /b 1
 )
-if exist "%OUTPUT_DIR%\LightPage_%APP_VERSION%_x64-setup.exe" del /Q "%OUTPUT_DIR%\LightPage_%APP_VERSION%_x64-setup.exe"
+if exist "%OUTPUT_DIR%\LightPage_%APP_VERSION%_windows-x64-setup.exe" del /Q "%OUTPUT_DIR%\LightPage_%APP_VERSION%_windows-x64-setup.exe"
 for %%F in ("%MOBILE_APP%\src-tauri\target\release\bundle\nsis\*setup.exe") do (
-  copy /Y "%%~fF" "%OUTPUT_DIR%\LightPage_%APP_VERSION%_x64-setup.exe" >nul
+  copy /Y "%%~fF" "%OUTPUT_DIR%\LightPage_%APP_VERSION%_windows-x64-setup.exe" >nul
 )
-if not exist "%OUTPUT_DIR%\LightPage_%APP_VERSION%_x64-setup.exe" (
+if not exist "%OUTPUT_DIR%\LightPage_%APP_VERSION%_windows-x64-setup.exe" (
   echo ERROR: NSIS installer was not found
   exit /b 1
 )
 
 echo ============================================
 echo   BUILD SUCCESS - UNSIGNED WINDOWS BUILD
-echo   EXE:   %OUTPUT_DIR%\LightPage.exe
-echo   SETUP: %OUTPUT_DIR%\LightPage_%APP_VERSION%_x64-setup.exe
+echo   EXE:   %OUTPUT_DIR%\LightPage_%APP_VERSION%_windows-x64.exe
+echo   SETUP: %OUTPUT_DIR%\LightPage_%APP_VERSION%_windows-x64-setup.exe
 echo ============================================
 echo NOTE: Unsigned builds may trigger Windows SmartScreen.
 
