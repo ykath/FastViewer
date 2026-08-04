@@ -26,6 +26,32 @@ beforeEach(() => {
 })
 
 describe('MarkdownReader', () => {
+  it('为连续的数字编号参考文献保留单换行，同时不改变普通段落的软换行', () => {
+    const content = `## 参考文献
+
+[1] First reference. *Journal One*.
+[2] Second reference. *Journal Two*.
+[3] Third reference.
+
+普通段落第一行
+普通段落第二行`
+    const { container } = render(
+      <MarkdownReader
+        content={content}
+        contentRef={createRef<HTMLElement>()}
+        themeMode="light"
+      />,
+    )
+
+    const paragraphs = container.querySelectorAll('p')
+    expect(paragraphs[0].querySelectorAll('br')).toHaveLength(2)
+    expect(paragraphs[0].querySelectorAll('em')).toHaveLength(2)
+    expect(paragraphs[0].textContent).toContain('[1] First reference. Journal One.')
+    expect(paragraphs[0].textContent).toContain('[3] Third reference.')
+    expect(paragraphs[1].querySelector('br')).toBeNull()
+    expect(paragraphs[1].textContent).toBe('普通段落第一行\n普通段落第二行')
+  })
+
   it('行内代码等嵌套格式生成与目录一致的标题锚点', () => {
     const content = '## 2.1 CLI 命令行接口 (`cli.py`) 与 **配置**'
     const [heading] = extractMarkdownHeadings(content)

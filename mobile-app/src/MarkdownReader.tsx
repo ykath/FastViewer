@@ -10,6 +10,7 @@ import katexStyles from 'katex/dist/katex.min.css?inline'
 import MermaidDiagram from './MermaidDiagram'
 import rehypeCodeHighlight from './rehype-code-highlight'
 import remarkDisplayMath from './remark-display-math'
+import remarkReferenceBreaks from './remark-reference-breaks'
 import type { ThemeMode } from './reader-settings'
 import { buildRenderPlan, createRenderPlan, reconcileRenderPlans } from './render-plan'
 import type { RenderBlock, RenderPlan } from './render-plan'
@@ -95,7 +96,7 @@ function MarkdownReader({ content, documentPath, resources, contentRef, themeMod
     <article className="reader-content markdown-body" ref={contentRef}>
       <style data-search-exclude="true">{katexStyles}</style>
       <ReactMarkdown
-        remarkPlugins={[remarkGfm, [remarkMath, { singleDollarTextMath: true }], remarkDisplayMath]}
+        remarkPlugins={[remarkGfm, [remarkMath, { singleDollarTextMath: true }], remarkDisplayMath, remarkReferenceBreaks]}
         rehypePlugins={[rehypeCodeHighlight, [rehypeKatex, { throwOnError: false, trust: false }]]}
         components={components}
         urlTransform={markdownUrlTransform}
@@ -267,7 +268,7 @@ const ProgressiveBlock = memo(function ProgressiveBlock({
     >
       {visible && (
         <ReactMarkdown
-          remarkPlugins={[remarkGfm, [remarkMath, { singleDollarTextMath: true }], remarkDisplayMath]}
+          remarkPlugins={[remarkGfm, [remarkMath, { singleDollarTextMath: true }], remarkDisplayMath, remarkReferenceBreaks]}
           rehypePlugins={[rehypeCodeHighlight, [rehypeKatex, { throwOnError: false, trust: false }]]}
           components={components}
           urlTransform={markdownUrlTransform}

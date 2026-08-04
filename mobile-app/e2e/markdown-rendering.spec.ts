@@ -1,5 +1,25 @@
 import { expect, test } from '@playwright/test'
 
+test('连续数字编号参考文献按源文件换行，普通段落仍使用软换行', async ({ page }) => {
+  await page.goto('/')
+  await page.locator('input[type="file"]').setInputFiles({
+    name: '参考文献换行.md',
+    mimeType: 'text/markdown',
+    buffer: Buffer.from(`## 参考文献
+
+[1] First reference. *Journal One*.
+[2] Second reference. *Journal Two*.
+[3] Third reference.
+
+普通段落第一行
+普通段落第二行`),
+  })
+
+  const paragraphs = page.locator('.markdown-body p')
+  await expect(paragraphs.nth(0).locator('br')).toHaveCount(2)
+  await expect(paragraphs.nth(1).locator('br')).toHaveCount(0)
+})
+
 test('Markdown 可绘制多行 Python、Mermaid 流程图和数学公式', async ({ page }) => {
   await page.goto('/')
   await page.locator('input[type="file"]').setInputFiles({

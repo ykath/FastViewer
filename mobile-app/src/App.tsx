@@ -2924,7 +2924,7 @@ function ReaderPage({
       frameDocument.querySelectorAll('a[href]').forEach((anchor) => {
         anchor.addEventListener('click', (event) => {
           const element = event.currentTarget as HTMLAnchorElement
-          const href = element.dataset.externalHref ?? element.href
+          const href = element.dataset.externalHref
           if (!href) return
 
           event.preventDefault()
@@ -2943,13 +2943,20 @@ function ReaderPage({
     onUpdate({ lastReadHeadingId: heading.id })
     try {
       const scroll = () => {
-        if (document.fileType === 'html') iframeRef.current?.contentDocument?.getElementById(heading.id)?.scrollIntoView({ block: 'start' })
-        else contentRef.current?.querySelector<HTMLElement>(`#${CSS.escape(heading.id)}`)?.scrollIntoView({ block: 'start' })
+        if (document.fileType === 'html') {
+          if (allowScripts) {
+            iframeRef.current?.contentWindow?.postMessage({ type: 'lightpage-scroll-to-heading', id: heading.id }, '*')
+          } else {
+            iframeRef.current?.contentDocument?.getElementById(heading.id)?.scrollIntoView({ block: 'start' })
+          }
+        } else {
+          contentRef.current?.querySelector<HTMLElement>(`#${CSS.escape(heading.id)}`)?.scrollIntoView({ block: 'start' })
+        }
       }
       scroll()
       window.setTimeout(scroll, 60)
     } catch {
-      onShowToast('脚本隔离模式下无法定位目录，请暂时关闭脚本权限', 'warning')
+      onShowToast('暂时无法定位到该章节', 'warning')
     }
     if (closeMobileDirectory) setTocOpen(false)
   }
