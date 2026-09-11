@@ -140,6 +140,35 @@ describe('desktop platform adapter', () => {
     })
   })
 
+  it('waits for a stable file snapshot before refreshing externally modified content', async () => {
+    vi.useFakeTimers()
+    try {
+      const revisions = [
+        { size: 2, modifiedAtNanos: '1' },
+        { size: 3, modifiedAtNanos: '2' },
+        { size: 3, modifiedAtNanos: '2' },
+        { size: 3, modifiedAtNanos: '2' },
+        { size: 3, modifiedAtNanos: '2' },
+      ]
+      const invokeMock = vi.fn(async () => revisions.shift()) as DesktopPlatformDependencies['invoke']
+      const readFile = vi.fn(async () => new Uint8Array([1, 2, 3]))
+      const platform = createDesktopPlatform(createDependencies({ invoke: invokeMock, readFile }))
+      const result = platform.readStableDocument({
+        path: 'C:\\文档\\notes.md',
+        fileName: 'notes.md',
+        size: 3,
+        source: 'picker',
+      })
+
+      await vi.runAllTimersAsync()
+      await expect(result).resolves.toEqual(new Uint8Array([1, 2, 3]))
+      expect(readFile).toHaveBeenCalledTimes(1)
+      expect(invokeMock).toHaveBeenCalledTimes(5)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   it('does not write files when an export dialog is cancelled', async () => {
     const writeFile = vi.fn(async () => undefined)
     const platform = createDesktopPlatform(createDependencies({ writeFile }))

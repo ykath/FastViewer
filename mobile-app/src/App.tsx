@@ -89,6 +89,7 @@ import {
   reanchorAnnotation,
   sha256Text,
 } from './annotations'
+import { contentRenderRevision } from './render-revision'
 import './App.css'
 
 const MarkdownReader = lazy(() => import('./MarkdownReader'))
@@ -1135,11 +1136,18 @@ function App() {
         if (!current?.sourceUri) return false
         try {
           const request = await desktopPlatform.prepareDocument(current.sourceUri, 'picker')
-          const bytes = await desktopPlatform.readDocument(request)
+          const bytes = await desktopPlatform.readStableDocument(request)
           const decoded = await decodeDocumentBytes(bytes)
-          const resources = current.fileType === 'markdown'
-            ? await desktopPlatform.loadMarkdownResources(request.path, decoded.content).catch(() => ({}))
-            : {}
+          let resources: Record<string, string> = {}
+          if (current.fileType === 'markdown') {
+            try {
+              resources = await desktopPlatform.loadMarkdownResources(request.path, decoded.content)
+            } catch {
+              // A referenced image can be locked or replaced during an editor's
+              // atomic save. Keep the last good resource snapshot in that window.
+              resources = current.archiveResources ?? {}
+            }
+          }
           const changed = current.content !== decoded.content
             || current.encoding !== decoded.encoding
             || current.fileSize !== bytes.length
@@ -1870,6 +1878,11 @@ function ReaderPage({
     document.fileSize >= FILE_SIZE_DANGER ? 'source' : 'rendered',
   )
   const [renderFailed, setRenderFailed] = useState(false)
+  const [markdownRenderAttempt, setMarkdownRenderAttempt] = useState(0)
+  const markdownContentRevision = useMemo(
+    () => contentRenderRevision(document.content),
+    [document.content],
+  )
   const [allowExternalOnce, setAllowExternalOnce] = useState(false)
   const [htmlFrameVersion, setHtmlFrameVersion] = useState(0)
   const contentRef = useRef<HTMLElement | null>(null)
@@ -1916,6 +1929,11 @@ function ReaderPage({
     renderStartedAtRef.current = startPerformanceSpan()
     renderMetricsRevisionRef.current = ''
   }, [document.id])
+
+  useEffect(() => {
+    setRenderFailed(false)
+    setMarkdownRenderAttempt(0)
+  }, [document.content, document.id])
 
   useEffect(() => {
     setReaderToolbarY(settings.readerToolbarY)
@@ -3479,19 +3497,25 @@ function ReaderPage({
         </div>
       ) : document.fileType === 'markdown' ? (
         <RenderErrorBoundary
+          key={`${document.id}:${markdownContentRevision}:${markdownRenderAttempt}`}
           fallback={
             <div>
               <div className="render-fallback-notice">
                 <AlertCircle size={16} />
                 <span>渲染异常，已切换纯文本视图</span>
-                <button type="button" onClick={() => setRenderFailed(false)}>重试</button>
+                <button type="button" onClick={() => { setRenderFailed(false); setMarkdownRenderAttempt((value) => value + 1) }}>重试</button>
               </div>
               <pre className="source-view">{document.content}</pre>
             </div>
           }
-          onError={() => {
+          onError={(error, info) => {
+            console.error('Markdown render failed', error, info.componentStack)
+            if (markdownRenderAttempt === 0) {
+              window.setTimeout(() => setMarkdownRenderAttempt(1), 80)
+              return
+            }
             setRenderFailed(true)
-            onShowToast('渲染异常，已切换纯文本视图', 'warning')
+            onShowToast('渲染连续失败，已切换纯文本视图', 'warning')
           }}
         >
           <Suspense fallback={<div className="reader-content"><Loader2 className="loading-spinner" /> 正在加载 Markdown 阅读器...</div>}>
@@ -3888,12 +3912,12 @@ function LoadingState() {
 }
 
 class RenderErrorBoundary extends React.Component<
-  { fallback: React.ReactNode; children: React.ReactNode; onError?: () => void },
+  { fallback: React.ReactNode; children: React.ReactNode; onError?: (error: Error, info: React.ErrorInfo) => void },
   { hasError: boolean }
 > {
   state = { hasError: false }
   static getDerivedStateFromError() { return { hasError: true } }
-  componentDidCatch() { this.props.onError?.() }
+  componentDidCatch(error: Error, info: React.ErrorInfo) { this.props.onError?.(error, info) }
   render() {
     if (this.state.hasError) return this.props.fallback
     return this.props.children

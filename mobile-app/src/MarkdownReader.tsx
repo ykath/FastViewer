@@ -14,6 +14,7 @@ import remarkReferenceBreaks from './remark-reference-breaks'
 import type { ThemeMode } from './reader-settings'
 import { buildRenderPlan, createRenderPlan, reconcileRenderPlans } from './render-plan'
 import type { RenderBlock, RenderPlan } from './render-plan'
+import { contentRenderRevision } from './render-revision'
 
 type MarkdownReaderProps = {
   content: string
@@ -34,6 +35,7 @@ const PROGRESSIVE_THRESHOLD = 1024 * 1024
 function MarkdownReader({ content, documentPath, resources, contentRef, themeMode, onOpenExternalLink, searchQuery = '', forceHeadingId, renderAll = false, onPlanReady, onRenderChange }: MarkdownReaderProps) {
   const [asyncPlan, setAsyncPlan] = useState<RenderPlan | null>(null)
   const lastCompletedPlanRef = useRef<RenderPlan | null>(null)
+  const renderRevision = useMemo(() => contentRenderRevision(content), [content])
   const immediatePlan = useMemo(() => content.length < PROGRESSIVE_THRESHOLD ? createRenderPlan(content) : null, [content])
   const previewPlan = useMemo(
     () => content.length >= PROGRESSIVE_THRESHOLD ? createRenderPlan(content.slice(0, 128 * 1024)) : null,
@@ -69,10 +71,11 @@ function MarkdownReader({ content, documentPath, resources, contentRef, themeMod
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [content, documentPath, resources, themeMode, onOpenExternalLink, renderAll],
   )
-  if (!plan) return <article className="reader-content markdown-body" ref={contentRef}>正在生成大文档阅读视图...</article>
+  if (!plan) return <article key={renderRevision} className="reader-content markdown-body" ref={contentRef}>正在生成大文档阅读视图...</article>
   if (content.length >= PROGRESSIVE_THRESHOLD) {
     return (
       <article
+        key={renderRevision}
         className="reader-content markdown-body progressive-markdown"
         ref={contentRef}
         data-render-revision={plan.revision}
@@ -101,7 +104,7 @@ function MarkdownReader({ content, documentPath, resources, contentRef, themeMod
     )
   }
   return (
-    <article className="reader-content markdown-body" ref={contentRef}>
+    <article key={renderRevision} className="reader-content markdown-body" ref={contentRef}>
       <style data-search-exclude="true">{katexStyles}</style>
       <ReactMarkdown
         remarkPlugins={[remarkGfm, [remarkMath, { singleDollarTextMath: true }], remarkDisplayMath, remarkReferenceBreaks]}

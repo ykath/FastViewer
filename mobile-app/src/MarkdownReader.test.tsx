@@ -175,6 +175,26 @@ describe('MarkdownReader', () => {
     expect(container.querySelector('.mermaid-svg svg')).toBe(firstSvg)
   })
 
+  it('内容变化时整体替换被高亮改写过的正文节点', () => {
+    const contentRef = createRef<HTMLElement>()
+    const sharedPrefix = '正文'.repeat(1_100)
+    const { rerender } = render(
+      <MarkdownReader content={`${sharedPrefix}旧内容`} contentRef={contentRef} themeMode="light" />,
+    )
+    const originalRoot = contentRef.current
+    const textNode = originalRoot?.querySelector('p')?.firstChild
+    expect(textNode).toBeInstanceOf(Text)
+    const mark = document.createElement('mark')
+    mark.className = 'annotation-highlight'
+    mark.textContent = textNode?.textContent ?? ''
+    textNode?.parentNode?.replaceChild(mark, textNode)
+
+    rerender(<MarkdownReader content={`${sharedPrefix}新内容`} contentRef={contentRef} themeMode="light" />)
+
+    expect(contentRef.current).not.toBe(originalRoot)
+    expect(contentRef.current?.textContent).toContain('新内容')
+  })
+
   it('Mermaid 语法错误只在图表位置显示源码回退', async () => {
     mermaidRenderMock.mockRejectedValueOnce(new Error('Parse error'))
     render(

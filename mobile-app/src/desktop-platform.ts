@@ -52,6 +52,7 @@ type RelativeResourcePaths = Record<string, string>
 
 const MAX_RELATIVE_IMAGES = 64
 const DOCUMENT_READ_RETRY_DELAYS_MS = [0, 80, 220] as const
+const DOCUMENT_STABLE_READ_DELAYS_MS = [120, 240, 480] as const
 
 export type DesktopPlatformDependencies = {
   isTauri: () => boolean
@@ -183,6 +184,32 @@ export function createDesktopPlatform(dependencies: DesktopPlatformDependencies 
         if (delay > 0) await new Promise((resolve) => window.setTimeout(resolve, delay))
         try {
           return await dependencies.readFile(request.path)
+        } catch (error) {
+          lastError = error
+        }
+      }
+      throw lastError
+    },
+
+    async readStableDocument(request: DesktopOpenRequest) {
+      let lastError: unknown = new Error('文件仍在写入，暂时无法获得稳定内容')
+      for (const delay of DOCUMENT_STABLE_READ_DELAYS_MS) {
+        try {
+          const before = await dependencies.invoke<DesktopDocumentRevision>('get_document_revision', {
+            documentPath: request.path,
+          })
+          await new Promise((resolve) => window.setTimeout(resolve, delay))
+          const settled = await dependencies.invoke<DesktopDocumentRevision>('get_document_revision', {
+            documentPath: request.path,
+          })
+          if (!sameDocumentRevision(before, settled)) continue
+
+          const bytes = await dependencies.readFile(request.path)
+          const after = await dependencies.invoke<DesktopDocumentRevision>('get_document_revision', {
+            documentPath: request.path,
+          })
+          if (bytes.length === after.size && sameDocumentRevision(settled, after)) return bytes
+          lastError = new Error('文件在读取过程中再次发生变化')
         } catch (error) {
           lastError = error
         }
@@ -360,6 +387,10 @@ export function createDesktopPlatform(dependencies: DesktopPlatformDependencies 
       await dependencies.invoke<void>('add_recent_document', { path })
     },
   }
+}
+
+function sameDocumentRevision(left: DesktopDocumentRevision, right: DesktopDocumentRevision) {
+  return left.size === right.size && left.modifiedAtNanos === right.modifiedAtNanos
 }
 
 export const desktopPlatform = createDesktopPlatform()
