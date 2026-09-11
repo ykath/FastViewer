@@ -24,13 +24,14 @@ type MarkdownReaderProps = {
   onOpenExternalLink?: (url: string) => void
   searchQuery?: string
   forceHeadingId?: string
+  renderAll?: boolean
   onPlanReady?: (plan: RenderPlan) => void
   onRenderChange?: () => void
 }
 
 const PROGRESSIVE_THRESHOLD = 1024 * 1024
 
-function MarkdownReader({ content, documentPath, resources, contentRef, themeMode, onOpenExternalLink, searchQuery = '', forceHeadingId, onPlanReady, onRenderChange }: MarkdownReaderProps) {
+function MarkdownReader({ content, documentPath, resources, contentRef, themeMode, onOpenExternalLink, searchQuery = '', forceHeadingId, renderAll = false, onPlanReady, onRenderChange }: MarkdownReaderProps) {
   const [asyncPlan, setAsyncPlan] = useState<RenderPlan | null>(null)
   const lastCompletedPlanRef = useRef<RenderPlan | null>(null)
   const immediatePlan = useMemo(() => content.length < PROGRESSIVE_THRESHOLD ? createRenderPlan(content) : null, [content])
@@ -63,15 +64,20 @@ function MarkdownReader({ content, documentPath, resources, contentRef, themeMod
   }, [completedPlan, onPlanReady])
 
   const components = useMemo(
-    () => createMarkdownComponents(documentPath, resources, themeMode, onOpenExternalLink),
+    () => createMarkdownComponents(documentPath, resources, themeMode, onOpenExternalLink, {}, renderAll),
     // Content changes intentionally reset the per-render duplicate-heading counters.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [content, documentPath, resources, themeMode, onOpenExternalLink],
+    [content, documentPath, resources, themeMode, onOpenExternalLink, renderAll],
   )
   if (!plan) return <article className="reader-content markdown-body" ref={contentRef}>正在生成大文档阅读视图...</article>
   if (content.length >= PROGRESSIVE_THRESHOLD) {
     return (
-      <article className="reader-content markdown-body progressive-markdown" ref={contentRef} data-render-revision={plan.revision}>
+      <article
+        className="reader-content markdown-body progressive-markdown"
+        ref={contentRef}
+        data-render-revision={plan.revision}
+        data-render-complete={completedPlan ? 'true' : 'false'}
+      >
         <style data-search-exclude="true">{katexStyles}</style>
         {plan.blocks.map((block, index) => (
           <ProgressiveBlock
@@ -79,9 +85,11 @@ function MarkdownReader({ content, documentPath, resources, contentRef, themeMod
             block={block}
             initiallyVisible={index < 12}
             forced={Boolean(
-              (forceHeadingId && block.headingIds.includes(forceHeadingId))
+              renderAll
+              || (forceHeadingId && block.headingIds.includes(forceHeadingId))
               || (searchQuery && block.plainText.toLocaleLowerCase().includes(searchQuery.toLocaleLowerCase())),
             )}
+            eagerMermaid={renderAll}
             documentPath={documentPath}
             resources={resources}
             themeMode={themeMode}
@@ -114,6 +122,7 @@ export default memo(MarkdownReader, (previous, next) => {
     && previous.contentRef === next.contentRef
     && previous.themeMode === next.themeMode
     && previous.onOpenExternalLink === next.onOpenExternalLink
+    && previous.renderAll === next.renderAll
     && previous.onPlanReady === next.onPlanReady
     && previous.onRenderChange === next.onRenderChange
   if (!sharedPropsEqual) return false
@@ -127,6 +136,7 @@ function createMarkdownComponents(
   themeMode: ThemeMode = 'light',
   onOpenExternalLink?: (url: string) => void,
   initialHeadingCounts: Record<string, number> = {},
+  eagerMermaid = false,
 ): Components {
   const used = new Map<string, number>(Object.entries(initialHeadingCounts))
   const documentDir = dirname(documentPath ?? '')
@@ -163,7 +173,7 @@ function createMarkdownComponents(
     code({ children, className, ...props }) {
       const language = /(?:^|\s)language-([^\s]+)/.exec(className ?? '')?.[1]?.toLowerCase()
       if (language === 'mermaid') {
-        return <MermaidDiagram source={String(children).replace(/\n$/, '')} themeMode={themeMode} />
+        return <MermaidDiagram source={String(children).replace(/\n$/, '')} themeMode={themeMode} eager={eagerMermaid} />
       }
       return <code className={className} {...props}>{children}</code>
     },
@@ -200,6 +210,7 @@ const ProgressiveBlock = memo(function ProgressiveBlock({
   block,
   initiallyVisible,
   forced,
+  eagerMermaid,
   documentPath,
   resources,
   themeMode,
@@ -209,6 +220,7 @@ const ProgressiveBlock = memo(function ProgressiveBlock({
   block: RenderBlock
   initiallyVisible: boolean
   forced: boolean
+  eagerMermaid: boolean
   documentPath?: string
   resources?: Record<string, string>
   themeMode: ThemeMode
@@ -220,8 +232,8 @@ const ProgressiveBlock = memo(function ProgressiveBlock({
   const [height, setHeight] = useState(block.estimatedHeight)
   const keepAliveAfterMount = /```\s*mermaid\b/i.test(block.source)
   const components = useMemo(
-    () => createMarkdownComponents(documentPath, resources, themeMode, onOpenExternalLink, block.headingCountsBefore),
-    [block.headingCountsBefore, documentPath, onOpenExternalLink, resources, themeMode],
+    () => createMarkdownComponents(documentPath, resources, themeMode, onOpenExternalLink, block.headingCountsBefore, eagerMermaid),
+    [block.headingCountsBefore, documentPath, eagerMermaid, onOpenExternalLink, resources, themeMode],
   )
 
   useEffect(() => {
@@ -264,6 +276,7 @@ const ProgressiveBlock = memo(function ProgressiveBlock({
       data-render-block={block.id}
       data-text-start={block.textStart}
       data-text-end={block.textEnd}
+      data-rich-copy-ready={visible ? 'true' : 'false'}
       style={visible ? undefined : { minHeight: `${height}px` }}
     >
       {visible && (
@@ -281,6 +294,7 @@ const ProgressiveBlock = memo(function ProgressiveBlock({
 }, (previous, next) => previous.block.revision === next.block.revision
   && previous.block.id === next.block.id
   && previous.forced === next.forced
+  && previous.eagerMermaid === next.eagerMermaid
   && previous.initiallyVisible === next.initiallyVisible
   && previous.documentPath === next.documentPath
   && previous.resources === next.resources

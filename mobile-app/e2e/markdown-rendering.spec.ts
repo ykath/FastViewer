@@ -1,5 +1,77 @@
 import { expect, test } from '@playwright/test'
 
+test('Markdown 菜单可复制 HTML 富文本和纯文本表示，源码视图不显示该操作', async ({ page, context }) => {
+  await context.grantPermissions(['clipboard-read', 'clipboard-write'])
+  await page.goto('/')
+  await page.locator('input[type="file"]').setInputFiles({
+    name: '富文本复制.md',
+    mimeType: 'text/markdown',
+    buffer: Buffer.from(`# 富文本标题
+
+正文包含 **加粗内容** 和 [链接](https://example.com)。
+
+- 列表项目
+
+| 项目 | 状态 |
+| --- | --- |
+| 富文本 | 可用 |
+
+\`\`\`ts
+const copied = true
+\`\`\`
+
+![示意图](data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=)
+`),
+  })
+
+  await page.getByRole('button', { name: '更多' }).click()
+  await expect(page.getByRole('button', { name: '复制富文本' })).toBeVisible()
+  await page.getByRole('button', { name: '复制富文本' }).click()
+  await expect(page.getByText('已复制富文本')).toBeVisible()
+
+  const clipboard = await page.evaluate(async () => {
+    const [item] = await navigator.clipboard.read()
+    const html = await (await item.getType('text/html')).text()
+    const text = await (await item.getType('text/plain')).text()
+    return { types: item.types, html, text }
+  })
+  expect(clipboard.types).toEqual(expect.arrayContaining(['text/html', 'text/plain']))
+  expect(clipboard.html).toContain('<h1 style="font-size:28px;')
+  expect(clipboard.html).toContain('<table style="width:100%;')
+  expect(clipboard.html).toContain('href="https://example.com/"')
+  expect(clipboard.html).toContain('data:image/png;base64,')
+  expect(clipboard.text).toContain('富文本标题')
+  expect(clipboard.text).toContain('const copied = true')
+
+  await page.getByRole('button', { name: '更多' }).click()
+  await page.getByRole('button', { name: '查看源码' }).click()
+  await page.getByRole('button', { name: '更多' }).click()
+  await expect(page.getByRole('button', { name: '复制富文本' })).toHaveCount(0)
+})
+
+test('复制大型 Markdown 时包含尚未进入视口的末尾内容', async ({ page, context }) => {
+  test.setTimeout(90_000)
+  await context.grantPermissions(['clipboard-read', 'clipboard-write'])
+  await page.goto('/')
+  const section = '## 延迟区块\n\n这是用于验证完整富文本复制的长段落。'.repeat(900)
+  const content = `# 大型文档\n\n${section.repeat(24)}\n\n## 最后一节\n\nRICH_COPY_END_SENTINEL`
+  expect(Buffer.byteLength(content)).toBeGreaterThan(1024 * 1024)
+  await page.locator('input[type="file"]').setInputFiles({
+    name: '大型富文本复制.md',
+    mimeType: 'text/markdown',
+    buffer: Buffer.from(content),
+  })
+
+  await page.getByRole('button', { name: '更多' }).click()
+  await page.getByRole('button', { name: '复制富文本' }).click()
+  await expect(page.getByText('已复制富文本')).toBeVisible({ timeout: 45_000 })
+  const copiedText = await page.evaluate(async () => {
+    const [item] = await navigator.clipboard.read()
+    return (await item.getType('text/plain')).text()
+  })
+  expect(copiedText).toContain('RICH_COPY_END_SENTINEL')
+})
+
 test('连续数字编号参考文献按源文件换行，普通段落仍使用软换行', async ({ page }) => {
   await page.goto('/')
   await page.locator('input[type="file"]').setInputFiles({

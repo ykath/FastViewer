@@ -10,29 +10,29 @@
 
 | 平台 | 当前源码版本 | 最新公开 Release | 说明 |
 | --- | --- | --- | --- |
-| Windows x64 | **1.5.1** | **v1.5.1** | 提供安装版和便携版 |
-| Android | **1.5.1**（`versionCode 7`） | **v1.5.1** | 提供调试证书签名 APK |
+| Windows x64 | **1.5.2** | **v1.5.2** | 提供安装版和便携版 |
+| Android | **1.5.2**（`versionCode 8`） | **v1.5.2** | 提供调试证书签名 APK |
 
-> `v1.5.1` 同时包含 Windows 与 Android 构建，两个平台共享相同的前端阅读能力。
+> `v1.5.2` 同时包含 Windows 与 Android 构建，两个平台共享相同的前端阅读能力。
 
 ## 下载
 
 请从项目的 [GitHub Releases](https://github.com/ykath/FastViewer/releases) 下载，避免使用来源不明的安装文件。
 
-### Windows 1.5.1
+### Windows 1.5.2
 
 [前往最新 Release](https://github.com/ykath/FastViewer/releases/latest)：
 
-- 安装版：`LightPage_1.5.1_windows-x64-setup.exe`
-- 便携版：`LightPage_1.5.1_windows-x64.exe`
+- 安装版：`LightPage_1.5.2_windows-x64-setup.exe`
+- 便携版：`LightPage_1.5.2_windows-x64.exe`
 
 推荐普通用户使用安装版。便携版依赖目标电脑已安装 Microsoft Edge WebView2 Runtime。
 
-### Android 1.5.1
+### Android 1.5.2
 
 Android 安装包与 Windows 版本一并发布：
 
-- `LightPage_1.5.1_android-debug.apk`
+- `LightPage_1.5.2_android-debug.apk`
 
 > Android APK 使用调试证书签名，Windows 文件尚未进行代码签名。Android 调试签名版本可能无法覆盖其他证书签名的旧版本；Windows SmartScreen 也可能显示安全提示。
 
@@ -46,11 +46,11 @@ Android 安装包与 Windows 版本一并发布：
 - 支持文内搜索、结果高亮、上一处/下一处跳转。
 - 提供浅色、深色和跟随系统主题，以及正文字号、代码字号、行高、内容宽度等排版设置。
 - 保存最近阅读、收藏、文件库和每份文档的阅读位置。
-- 支持复制全文，以及图片、分页长图、PDF 和原始文件导出；Android 还可导出批注摘要。
+- 支持复制 Markdown 源文和带标题、列表、表格、代码、链接及图片的富文本，以及图片、分页长图、PDF 和原始文件导出；Android 还可导出批注摘要。
 - HTML 默认在安全沙箱内渲染，危险脚本、自动跳转、自动下载和远程资源受到限制。
 - 文档正文、搜索词和批注默认只在本机处理，不自动上传到服务器。
 
-### Android 1.5.1
+### Android 1.5.2
 
 - 支持从其他应用通过 `VIEW`、`SEND`、`SEND_MULTIPLE` 打开文件；请求先复制到应用私有目录，再通过持久化队列按顺序处理，可确认、重试、丢弃并在进程重启后恢复。
 - 支持 ZIP / RAR 文档包持久化、SHA-256 去重、条目按需加载、包内目录、上一篇/下一篇和阅读位置恢复；优先打开 README 或 index 文档。
@@ -62,7 +62,7 @@ Android 安装包与 Windows 版本一并发布：
 - 针对 600 dp / 840 dp 宽度提供平板、横屏和折叠屏布局，并避让折叠铰链区域。
 - 提供缓存占用统计与清理入口；解压缓存按 LRU 回收，分享缓存、外部打开队列和低存储场景设有容量保护。
 
-### Windows 1.5.1
+### Windows 1.5.2
 
 - 保持单活动文档阅读模式；左侧阅读栏可在“章节”和“当前目录”之间切换，快速打开同目录的 Markdown / HTML 文档。
 - 可将当前目录固定到最左侧导航栏，悬停查看完整路径，并随时取消固定。
@@ -78,7 +78,7 @@ Android 安装包与 Windows 版本一并发布：
 
 ## 平台差异与已知限制
 
-| 能力 | Android 1.5.1 | Windows 1.5.1 |
+| 能力 | Android 1.5.2 | Windows 1.5.2 |
 | --- | --- | --- |
 | 从其他应用/资源管理器打开 | 支持 Android Intent 与系统分享入口 | 支持文件选择、拖放、文件关联和单实例唤起 |
 | ZIP / RAR 文档包 | 支持 | 暂不支持原生导入 |
@@ -98,7 +98,14 @@ Android 安装包与 Windows 版本一并发布：
 
 ## 版本变化
 
-### v1.5.1（2026-08-04，当前公开版本）
+### v1.5.2（2026-09-11，当前公开版本）
+
+- Markdown 阅读视图新增“复制富文本”，可将标题、列表、表格、代码、链接和图片直接粘贴到 Gmail、Word、Foxmail 等软件。
+- 剪贴板同时提供 HTML 和纯文本格式，并清理搜索高亮、批注标记与阅读器控件。
+- 大型 Markdown 会在复制前临时完成全部分块渲染，避免遗漏尚未进入视口的正文。
+- Android 使用原生 HTML 剪贴板，Windows 使用 WebView2 富文本剪贴板并提供兼容兜底。
+
+### v1.5.1（2026-08-04，上一公开版本）
 
 - 修复 HTML `srcdoc` 页内锚点错误继承应用地址、点击后 iframe 变为空白的问题。
 - 修复启用脚本隔离后，轻页生成的 HTML 目录无法定位章节的问题；目录通过受限消息桥在隔离文档内完成滚动。

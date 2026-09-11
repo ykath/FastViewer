@@ -9,6 +9,7 @@ import { readSvgDimensions } from './mermaid-image'
 type MermaidDiagramProps = {
   source: string
   themeMode: ThemeMode
+  eager?: boolean
 }
 
 type DiagramState =
@@ -18,16 +19,20 @@ type DiagramState =
 
 let renderQueue: Promise<void> = Promise.resolve()
 
-export default function MermaidDiagram({ source, themeMode }: MermaidDiagramProps) {
+export default function MermaidDiagram({ source, themeMode, eager = false }: MermaidDiagramProps) {
   const reactId = useId()
   const figureRef = useRef<HTMLElement>(null)
   const renderHostRef = useRef<HTMLDivElement>(null)
   const [state, setState] = useState<DiagramState>({ status: 'loading' })
-  const [eligible, setEligible] = useState(false)
+  const [eligible, setEligible] = useState(eager)
   const [viewerOpen, setViewerOpen] = useState(false)
   const diagramId = `mermaid-${reactId.replace(/[^a-zA-Z0-9_-]/g, '')}`
 
   useEffect(() => {
+    if (eager) {
+      setEligible(true)
+      return undefined
+    }
     const figure = figureRef.current
     if (!figure || typeof IntersectionObserver === 'undefined') {
       setEligible(true)
@@ -62,7 +67,7 @@ export default function MermaidDiagram({ source, themeMode }: MermaidDiagramProp
       window.removeEventListener('scroll', markEligible)
       window.removeEventListener('resize', markEligible)
     }
-  }, [])
+  }, [eager])
 
   useEffect(() => {
     if (!eligible) return undefined
@@ -103,7 +108,13 @@ export default function MermaidDiagram({ source, themeMode }: MermaidDiagramProp
   }
 
   return (<>
-    <figure ref={figureRef} className="mermaid-diagram" data-search-exclude="true">
+    <figure
+      ref={figureRef}
+      className="mermaid-diagram"
+      data-search-exclude="true"
+      data-mermaid-source={source}
+      data-render-status={!eligible ? 'pending' : state.status}
+    >
       <div ref={renderHostRef} className="mermaid-render-host" aria-hidden="true" />
       {!eligible && <div className="mermaid-status" role="status">流程图将在接近视口时绘制</div>}
       {eligible && state.status === 'loading' && (

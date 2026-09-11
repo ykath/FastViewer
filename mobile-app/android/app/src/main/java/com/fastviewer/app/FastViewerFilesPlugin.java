@@ -2,7 +2,9 @@ package com.fastviewer.app;
 
 import android.app.Activity;
 import android.content.ClipData;
+import android.content.ClipboardManager;
 import android.content.ContentResolver;
+import android.content.Context;
 import android.content.Intent;
 import android.content.SharedPreferences;
 import android.database.Cursor;
@@ -182,6 +184,25 @@ public class FastViewerFilesPlugin extends Plugin {
     public void setSelectionActionsEnabled(PluginCall call) {
         selectionActionsEnabled = Boolean.TRUE.equals(call.getBoolean("enabled", false));
         call.resolve();
+    }
+
+    @PluginMethod
+    public void copyRichText(PluginCall call) {
+        String html = call.getString("html");
+        String text = call.getString("text");
+        String label = call.getString("label", "LightPage Markdown");
+        if (html == null || text == null) {
+            call.reject("富文本内容不能为空");
+            return;
+        }
+        try {
+            ClipboardManager clipboard = (ClipboardManager) getContext().getSystemService(Context.CLIPBOARD_SERVICE);
+            if (clipboard == null) throw new IllegalStateException("系统剪贴板不可用");
+            clipboard.setPrimaryClip(ClipData.newHtmlText(label, text, html));
+            call.resolve();
+        } catch (Exception exception) {
+            call.reject("富文本复制失败：" + exception.getMessage(), exception);
+        }
     }
 
     @PluginMethod

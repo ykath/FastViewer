@@ -74,6 +74,12 @@ import { filterCommands, matchCommandShortcut } from './desktop-commands'
 import type { DesktopCommand } from './desktop-commands'
 import { backgroundTasks } from './background-tasks'
 import {
+  buildRichTextPayload,
+  waitForRichTextRender,
+  writePlainTextToClipboard,
+  writeRichTextToClipboard,
+} from './rich-text-copy'
+import {
   annotationsToMarkdown,
   applyAnnotationHighlights,
   canonicalText,
@@ -211,6 +217,7 @@ type FastViewerFilesPlugin = {
   }>
   setVolumePageEnabled: (options: { enabled: boolean }) => Promise<void>
   setSelectionActionsEnabled: (options: { enabled: boolean }) => Promise<void>
+  copyRichText: (options: { label: string; html: string; text: string }) => Promise<void>
   prepareShareCache: (options: { expectedBytes: number }) => Promise<{ availableBytes: number }>
   addListener: (
     eventName: 'fileOpen' | 'openRequestAvailable' | 'volumePage' | 'layoutChanged',
@@ -1762,6 +1769,7 @@ function ReaderPage({
   const [contentRevision, setContentRevision] = useState(document.contentRevision ?? '')
   const [renderPlainText, setRenderPlainText] = useState('')
   const [annotationRenderTick, setAnnotationRenderTick] = useState(0)
+  const [richCopyRenderAll, setRichCopyRenderAll] = useState(false)
   const [selectionAction, setSelectionAction] = useState<ReaderSelectionAction | null>(null)
   const [shareCardText, setShareCardText] = useState<string | null>(null)
   const [shareCardTemplate, setShareCardTemplate] = useState<ShareCardTemplate>('simple')
@@ -1816,6 +1824,7 @@ function ReaderPage({
 
   useEffect(() => {
     setRenderPlainText('')
+    setRichCopyRenderAll(false)
     renderStartedAtRef.current = startPerformanceSpan()
     renderMetricsRevisionRef.current = ''
   }, [document.id])
@@ -2327,6 +2336,28 @@ function ReaderPage({
       } catch {
         onShowToast('复制失败，请检查系统权限', 'warning')
       }
+    }
+  }
+
+  const copyRichText = async () => {
+    if (document.fileType !== 'markdown' || readerMode !== 'rendered' || renderFailed) return
+    setRichCopyRenderAll(true)
+    let fallbackText = renderPlainText || document.content
+    try {
+      const root = await waitForRichTextRender(() => contentRef.current)
+      const payload = await buildRichTextPayload(root, document.fileName)
+      fallbackText = payload.text || fallbackText
+      if (Capacitor.isNativePlatform()) {
+        await FastViewerFiles.copyRichText({ label: document.fileName, ...payload })
+      } else {
+        await writeRichTextToClipboard(payload)
+      }
+      onShowToast('已复制富文本', 'success')
+    } catch {
+      const copied = await writePlainTextToClipboard(fallbackText)
+      onShowToast(copied ? '富文本复制失败，已复制纯文本' : '复制失败，请检查系统剪贴板权限', 'warning')
+    } finally {
+      setRichCopyRenderAll(false)
     }
   }
 
@@ -3049,6 +3080,9 @@ function ReaderPage({
         }}
       />
       <MenuAction icon={<Copy size={18} />} label="复制全文" onClick={() => { setMenuOpen(false); void copyText() }} />
+      {document.fileType === 'markdown' && readerMode === 'rendered' && !renderFailed && (
+        <MenuAction icon={<Copy size={18} />} label="复制富文本" onClick={() => { setMenuOpen(false); void copyRichText() }} />
+      )}
       {document.fileType === 'markdown' && (
         <>
           <MenuAction icon={<Bookmark size={18} />} label="添加章节书签" onClick={() => { setMenuOpen(false); void addBookmark() }} />
@@ -3375,6 +3409,7 @@ function ReaderPage({
               onOpenExternalLink={handleOpenExternalLink}
               searchQuery={debouncedQuery}
               forceHeadingId={activeHeadingId}
+              renderAll={richCopyRenderAll}
               onPlanReady={handleRenderPlanReady}
               onRenderChange={handleRenderChange}
             />
