@@ -85,6 +85,13 @@ pub struct DesktopFileChange {
     pub kind: &'static str,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DesktopDocumentRevision {
+    pub size: u64,
+    pub modified_at_nanos: String,
+}
+
 #[derive(Clone)]
 struct RegisteredWorkspace {
     id: String,
@@ -420,12 +427,10 @@ pub fn watch_document(
             let Ok(event) = result else {
                 return;
             };
-            let relevant = event.paths.iter().any(|path| {
-                callback_targets.contains(path)
-                    || fs::canonicalize(path)
-                        .ok()
-                        .is_some_and(|candidate| callback_targets.contains(&candidate))
-            });
+            let relevant = event
+                .paths
+                .iter()
+                .any(|path| event_path_matches_targets(path, &callback_targets));
             if !relevant {
                 return;
             }
@@ -457,6 +462,59 @@ pub fn watch_document(
         .map_err(|_| "文件监听注册表不可用".to_string())?
         .insert(document_id, DocumentWatch { _watcher: watcher });
     Ok(())
+}
+
+fn event_path_matches_targets(path: &Path, targets: &HashSet<PathBuf>) -> bool {
+    let normalized = normalized_watch_path(path);
+    if targets
+        .iter()
+        .any(|target| normalized_watch_path(target) == normalized)
+    {
+        return true;
+    }
+    fs::canonicalize(path).ok().is_some_and(|candidate| {
+        let normalized_candidate = normalized_watch_path(&candidate);
+        targets
+            .iter()
+            .any(|target| normalized_watch_path(target) == normalized_candidate)
+    })
+}
+
+fn normalized_watch_path(path: &Path) -> String {
+    #[cfg(windows)]
+    {
+        let value = path.to_string_lossy().replace('/', "\\");
+        return value
+            .strip_prefix(r"\\?\")
+            .unwrap_or(&value)
+            .to_ascii_lowercase();
+    }
+    #[cfg(not(windows))]
+    {
+        path.to_string_lossy().into_owned()
+    }
+}
+
+pub(crate) fn document_revision_impl(
+    path: impl AsRef<Path>,
+) -> Result<DesktopDocumentRevision, String> {
+    let (canonical, _) = validate_open_path(path, "picker")?;
+    let metadata = fs::metadata(canonical).map_err(|_| "无法读取文件信息".to_string())?;
+    let modified_at_nanos = metadata
+        .modified()
+        .ok()
+        .and_then(|modified| modified.duration_since(UNIX_EPOCH).ok())
+        .map(|duration| duration.as_nanos().to_string())
+        .unwrap_or_default();
+    Ok(DesktopDocumentRevision {
+        size: metadata.len(),
+        modified_at_nanos,
+    })
+}
+
+#[tauri::command]
+pub fn get_document_revision(document_path: String) -> Result<DesktopDocumentRevision, String> {
+    document_revision_impl(document_path)
 }
 
 #[tauri::command]
@@ -867,6 +925,39 @@ mod tests {
             relative_components("docs/guide.md").unwrap(),
             PathBuf::from("docs/guide.md")
         );
+    }
+
+    #[test]
+    fn reads_document_revision_for_polling_fallback() {
+        let root = temp_root("revision");
+        let document = root.join("notes.md");
+        fs::write(&document, b"# first").unwrap();
+        let first = document_revision_impl(&document).unwrap();
+        fs::write(&document, b"# second revision").unwrap();
+        let second = document_revision_impl(&document).unwrap();
+
+        assert_eq!(first.size, 7);
+        assert_eq!(second.size, 17);
+        assert!(!second.modified_at_nanos.is_empty());
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn watcher_matches_canonical_document_paths() {
+        let root = temp_root("watch-path");
+        let document = root.join("notes.md");
+        fs::write(&document, b"# notes").unwrap();
+        let canonical = fs::canonicalize(&document).unwrap();
+        let targets = HashSet::from([canonical]);
+
+        assert!(event_path_matches_targets(&document, &targets));
+        assert!(!event_path_matches_targets(
+            &root.join("other.md"),
+            &targets
+        ));
+
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

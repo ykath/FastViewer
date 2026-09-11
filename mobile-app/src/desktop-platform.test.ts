@@ -127,6 +127,19 @@ describe('desktop platform adapter', () => {
     expect(readFile).toHaveBeenCalledTimes(2)
   })
 
+  it('reads a stable file revision for the watcher polling fallback', async () => {
+    const invokeMock = vi.fn(async () => ({ size: 42, modifiedAtNanos: '123456789' })) as DesktopPlatformDependencies['invoke']
+    const platform = createDesktopPlatform(createDependencies({ invoke: invokeMock }))
+
+    await expect(platform.getDocumentRevision('C:\\文档\\notes.md')).resolves.toEqual({
+      size: 42,
+      modifiedAtNanos: '123456789',
+    })
+    expect(invokeMock).toHaveBeenCalledWith('get_document_revision', {
+      documentPath: 'C:\\文档\\notes.md',
+    })
+  })
+
   it('does not write files when an export dialog is cancelled', async () => {
     const writeFile = vi.fn(async () => undefined)
     const platform = createDesktopPlatform(createDependencies({ writeFile }))

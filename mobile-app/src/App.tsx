@@ -22,6 +22,7 @@ import {
   Moon,
   Pin,
   PinOff,
+  RefreshCw,
   Search,
   Settings,
   Share2,
@@ -330,6 +331,8 @@ function App() {
   const viewRef = useRef(view)
   const documentsRef = useRef(documents)
   const desktopRefreshTimersRef = useRef(new Map<string, number>())
+  const desktopRefreshInFlightRef = useRef(new Set<string>())
+  const desktopRefreshPendingRef = useRef(new Map<string, 'auto' | 'manual'>())
   const lastDropRef = useRef({ signature: '', receivedAt: 0, processing: false })
   const isDesktop = desktopPlatform.isDesktop()
 
@@ -438,8 +441,9 @@ function App() {
 
   const persistDocuments = useCallback((updater: (items: DocumentRecord[]) => DocumentRecord[]) => {
     setDocuments((current) => {
-      const next = updater(current)
-      return sortDocuments(next)
+      const next = sortDocuments(updater(current))
+      documentsRef.current = next
+      return next
     })
   }, [setDocuments])
 
@@ -1115,29 +1119,69 @@ function App() {
     }
   }
 
-  const refreshDesktopDocument = async (documentId: string) => {
-    const current = documentsRef.current.find((item) => item.id === documentId)
-    if (!current?.sourceUri) return
+  const refreshDesktopDocument = async (documentId: string, trigger: 'auto' | 'manual' = 'auto') => {
+    if (desktopRefreshInFlightRef.current.has(documentId)) {
+      const pending = desktopRefreshPendingRef.current.get(documentId)
+      if (trigger === 'manual' || !pending) desktopRefreshPendingRef.current.set(documentId, trigger)
+      return false
+    }
+    desktopRefreshInFlightRef.current.add(documentId)
+    let nextTrigger: 'auto' | 'manual' = trigger
+    let refreshed = false
     try {
-      const request = await desktopPlatform.prepareDocument(current.sourceUri, 'picker')
-      const bytes = await desktopPlatform.readDocument(request)
-      const decoded = await decodeDocumentBytes(bytes)
-      const resources = current.fileType === 'markdown'
-        ? await desktopPlatform.loadMarkdownResources(request.path, decoded.content).catch(() => ({}))
-        : {}
-      persistDocuments((items) => items.map((item) => item.id === documentId ? {
-        ...item,
-        content: decoded.content,
-        rawBase64: decoded.rawBase64,
-        encoding: decoded.encoding,
-        fileSize: bytes.length,
-        archiveResources: Object.keys(resources).length ? resources : undefined,
-        contentRevision: stableDocumentId(item.fileName, decoded.content),
-        payloadLoaded: true,
-      } : item))
-      showToast(`已刷新 ${current.fileName}`, 'success')
-    } catch {
-      showToast(`${current.fileName} 已删除、移动或暂时不可访问`, 'warning')
+      do {
+        desktopRefreshPendingRef.current.delete(documentId)
+        const current = documentsRef.current.find((item) => item.id === documentId)
+        if (!current?.sourceUri) return false
+        try {
+          const request = await desktopPlatform.prepareDocument(current.sourceUri, 'picker')
+          const bytes = await desktopPlatform.readDocument(request)
+          const decoded = await decodeDocumentBytes(bytes)
+          const resources = current.fileType === 'markdown'
+            ? await desktopPlatform.loadMarkdownResources(request.path, decoded.content).catch(() => ({}))
+            : {}
+          const changed = current.content !== decoded.content
+            || current.encoding !== decoded.encoding
+            || current.fileSize !== bytes.length
+            || !sameStringRecord(current.archiveResources, resources)
+          if (changed) {
+            persistDocuments((items) => items.map((item) => item.id === documentId ? {
+              ...item,
+              content: decoded.content,
+              rawBase64: decoded.rawBase64,
+              encoding: decoded.encoding,
+              fileSize: bytes.length,
+              archiveResources: Object.keys(resources).length ? resources : undefined,
+              contentRevision: stableDocumentId(item.fileName, decoded.content),
+              payloadLoaded: true,
+            } : item))
+            refreshed = true
+          }
+          if (current.fileType === 'markdown') {
+            void desktopPlatform.resolveMarkdownResourcePaths(request.path, decoded.content)
+              .then((resourcePaths) => desktopPlatform.watchDocument(documentId, request.path, resourcePaths))
+              .catch(() => undefined)
+          }
+          if (nextTrigger === 'manual') {
+            showToast(changed ? `已重新加载 ${current.fileName}` : `${current.fileName} 已是最新`, 'success')
+          } else if (changed) {
+            showToast(`已自动同步 ${current.fileName}`, 'success')
+          }
+        } catch {
+          const current = documentsRef.current.find((item) => item.id === documentId)
+          showToast(
+            nextTrigger === 'manual'
+              ? `重新加载失败：${current?.fileName ?? '当前文件'} 已删除、移动或暂时不可访问`
+              : `${current?.fileName ?? '当前文件'} 已删除、移动或暂时不可访问`,
+            'warning',
+          )
+          return refreshed
+        }
+        nextTrigger = desktopRefreshPendingRef.current.get(documentId) ?? 'auto'
+      } while (desktopRefreshPendingRef.current.has(documentId))
+      return refreshed
+    } finally {
+      desktopRefreshInFlightRef.current.delete(documentId)
     }
   }
 
@@ -1147,6 +1191,7 @@ function App() {
 
   const desktopCommands: DesktopCommand[] = [
     { id: 'file.open', title: '打开文件', keywords: ['open'], shortcut: 'Ctrl+O', run: () => openFilePicker() },
+    { id: 'document.reload', title: '重新加载当前文件', keywords: ['reload', 'refresh', '同步'], shortcut: 'Ctrl+R', enabled: () => view === 'reader' && Boolean(activeDocument?.sourceUri), run: () => activeDocument ? refreshDesktopDocument(activeDocument.id, 'manual') : undefined },
     { id: 'directory.pin', title: currentDirectory && isDirectoryPinned(pinnedDirectories, currentDirectory.path) ? '取消固定当前目录' : '固定当前目录', keywords: ['folder', 'directory'], enabled: () => Boolean(currentDirectory), run: toggleCurrentDirectoryPin },
     { id: 'document.find', title: '在当前文档中查找', keywords: ['search'], shortcut: 'Ctrl+F', enabled: () => view === 'reader', run: () => dispatchReaderCommand('find') },
     { id: 'document.favorite', title: activeDocument?.isFavorite ? '取消收藏当前文档' : '收藏当前文档', shortcut: 'Ctrl+D', enabled: () => Boolean(activeDocument), run: () => updateActiveDocument({ isFavorite: !activeDocument?.isFavorite }) },
@@ -1229,28 +1274,68 @@ function App() {
 
   useEffect(() => {
     if (!isDesktop || view !== 'reader' || !activeDocument?.sourceUri) return undefined
+    const documentId = activeDocument.id
+    const documentPath = activeDocument.sourceUri
+    const refreshTimers = desktopRefreshTimersRef.current
     let disposed = false
-    void desktopPlatform.resolveMarkdownResourcePaths(activeDocument.sourceUri, activeDocument.content)
-      .then((resources) => desktopPlatform.watchDocument(activeDocument.id, activeDocument.sourceUri as string, resources))
-      .catch(() => undefined)
     let remove: (() => void) | undefined
-    void desktopPlatform.listenForFileChanges((change) => {
-      const existing = desktopRefreshTimersRef.current.get(change.documentId)
+    let revisionFingerprint: string | null = null
+    let revisionCheckRunning = false
+    const scheduleRefresh = (delay = 350) => {
+      const existing = refreshTimers.get(documentId)
       if (existing) window.clearTimeout(existing)
       const timer = window.setTimeout(() => {
-        desktopRefreshTimersRef.current.delete(change.documentId)
-        if (!disposed) void refreshDesktopDocument(change.documentId)
-      }, 200)
-      desktopRefreshTimersRef.current.set(change.documentId, timer)
-    }).then((unlisten) => { remove = unlisten })
+        refreshTimers.delete(documentId)
+        if (!disposed) void refreshDesktopDocument(documentId)
+      }, delay)
+      refreshTimers.set(documentId, timer)
+    }
+    const checkRevision = async () => {
+      if (disposed || revisionCheckRunning) return
+      revisionCheckRunning = true
+      try {
+        const revision = await desktopPlatform.getDocumentRevision(documentPath)
+        if (disposed) return
+        const nextFingerprint = `${revision.modifiedAtNanos}:${revision.size}`
+        if (revisionFingerprint !== null && revisionFingerprint !== nextFingerprint) scheduleRefresh(250)
+        revisionFingerprint = nextFingerprint
+      } catch {
+        // Atomic-save editors can briefly remove the destination file. The native
+        // watcher still schedules a retry, and the next poll observes recreation.
+      } finally {
+        revisionCheckRunning = false
+      }
+    }
+    void desktopPlatform.listenForFileChanges((change) => {
+      if (change.documentId === documentId) scheduleRefresh()
+    }).then((unlisten) => {
+      if (disposed) unlisten()
+      else remove = unlisten
+    })
+    void checkRevision()
+    void desktopPlatform.resolveMarkdownResourcePaths(documentPath, activeDocument.content)
+      .then(async (resources) => {
+        if (disposed) return
+        await desktopPlatform.watchDocument(documentId, documentPath, resources)
+        if (disposed) await desktopPlatform.unwatchDocument(documentId)
+      })
+      .catch(() => undefined)
+    const pollTimer = window.setInterval(() => { void checkRevision() }, 1_000)
     return () => {
       disposed = true
       remove?.()
-      void desktopPlatform.unwatchDocument(activeDocument.id)
+      window.clearInterval(pollTimer)
+      const pending = refreshTimers.get(documentId)
+      if (pending) {
+        window.clearTimeout(pending)
+        refreshTimers.delete(documentId)
+      }
+      void desktopPlatform.unwatchDocument(documentId)
     }
-  // The active revision is the watcher lifecycle boundary; refreshDesktopDocument intentionally reads through refs.
+  // Content changes must not recreate the watcher: an async cleanup could remove
+  // the replacement watcher and stop all later refreshes.
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeDocument?.contentRevision, activeDocument?.id, activeDocument?.sourceUri, isDesktop, view])
+  }, [activeDocument?.id, activeDocument?.sourceUri, isDesktop, view])
 
   return (
     <div className={`app-shell view-${view}`}>
@@ -1327,6 +1412,7 @@ function App() {
             resolvedTheme={resolvedTheme}
             onBack={() => setView('home')}
             onUpdate={updateActiveDocument}
+            onReload={activeDocument.sourceUri ? () => refreshDesktopDocument(activeDocument.id, 'manual') : undefined}
             onShowToast={showToast}
             onSetSettings={setSettings}
             onOpenPackageDocument={(item) => { void openDocument(item) }}
@@ -1714,6 +1800,7 @@ type ReaderPageProps = {
   resolvedTheme: ThemeMode
   onBack: () => void
   onUpdate: (patch: Partial<DocumentRecord>) => void
+  onReload?: () => Promise<boolean>
   onShowToast: (message: string, tone?: ToastState['tone']) => void
   onSetSettings: (settings: ReaderSettings) => void
   onOpenPackageDocument: (document: DocumentRecord) => void
@@ -1733,6 +1820,7 @@ function ReaderPage({
   resolvedTheme,
   onBack,
   onUpdate,
+  onReload,
   onShowToast,
   onSetSettings,
   onOpenPackageDocument,
@@ -3079,6 +3167,13 @@ function ReaderPage({
           setReaderMode(readerMode === 'source' ? 'rendered' : 'source')
         }}
       />
+      {isDesktop && onReload && (
+        <MenuAction
+          icon={<RefreshCw size={18} />}
+          label="重新加载"
+          onClick={() => { setMenuOpen(false); void onReload() }}
+        />
+      )}
       <MenuAction icon={<Copy size={18} />} label="复制全文" onClick={() => { setMenuOpen(false); void copyText() }} />
       {document.fileType === 'markdown' && readerMode === 'rendered' && !renderFailed && (
         <MenuAction icon={<Copy size={18} />} label="复制富文本" onClick={() => { setMenuOpen(false); void copyRichText() }} />
@@ -4358,6 +4453,16 @@ function stableDocumentId(fileName: string, content: string) {
     hash = (hash * 31 + input.charCodeAt(index)) | 0
   }
   return `${fileName.replace(/[^a-zA-Z0-9.-]/g, '_')}-${Math.abs(hash)}`
+}
+
+function sameStringRecord(
+  left: Record<string, string> | undefined,
+  right: Record<string, string> | undefined,
+) {
+  const leftEntries = Object.entries(left ?? {})
+  const rightEntries = Object.entries(right ?? {})
+  if (leftEntries.length !== rightEntries.length) return false
+  return leftEntries.every(([key, value]) => right?.[key] === value)
 }
 
 function findActiveHeading(

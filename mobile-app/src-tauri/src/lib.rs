@@ -14,9 +14,9 @@ mod workspace;
 
 use system_integration::{add_recent_document, get_html_open_with, set_html_open_with};
 use workspace::{
-    cancel_workspace_index, list_workspace_children, prepare_workspace_open, register_workspace,
-    remove_workspace, restore_workspaces, search_workspace, start_workspace_index,
-    unwatch_document, watch_document, DesktopWorkspaceState,
+    cancel_workspace_index, get_document_revision, list_workspace_children, prepare_workspace_open,
+    register_workspace, remove_workspace, restore_workspaces, search_workspace,
+    start_workspace_index, unwatch_document, watch_document, DesktopWorkspaceState,
 };
 
 const SUPPORTED_EXTENSIONS: &[&str] = &["md", "markdown", "mdown", "html", "htm", "xhtml"];
@@ -367,6 +367,7 @@ pub fn run() {
             remove_workspace,
             list_workspace_children,
             prepare_workspace_open,
+            get_document_revision,
             watch_document,
             unwatch_document,
             start_workspace_index,

@@ -37,6 +37,11 @@ export type DesktopDirectoryListing = {
   files: DesktopDirectoryDocument[]
 }
 
+export type DesktopDocumentRevision = {
+  size: number
+  modifiedAtNanos: string
+}
+
 export type DesktopImageFile = {
   fileName: string
   bytes: Uint8Array
@@ -183,6 +188,11 @@ export function createDesktopPlatform(dependencies: DesktopPlatformDependencies 
         }
       }
       throw lastError
+    },
+
+    async getDocumentRevision(documentPath: string): Promise<DesktopDocumentRevision> {
+      if (!isDesktop()) throw new Error('桌面文件接口不可用')
+      return dependencies.invoke<DesktopDocumentRevision>('get_document_revision', { documentPath })
     },
 
     async loadMarkdownResources(documentPath: string, content: string): Promise<Record<string, string>> {
