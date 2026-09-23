@@ -215,6 +215,90 @@ describe('MarkdownReader', () => {
     expect(contentRef.current?.textContent).toContain('新内容')
   })
 
+  it('解析 HTML video 标签并保留后续正文', () => {
+    const content = `<video width="320" height="240" controls>
+  <source src="./promo.mp4" type="video/mp4">
+</video>
+后续正文。`
+    const { container } = render(
+      <MarkdownReader
+        content={content}
+        documentPath="article.md"
+        resources={{ 'promo.mp4': 'asset://promo.mp4' }}
+        contentRef={createRef<HTMLElement>()}
+        themeMode="light"
+      />,
+    )
+
+    const video = container.querySelector('video.markdown-video')
+    expect(video).not.toBeNull()
+    expect(video?.getAttribute('controls')).not.toBeNull()
+    expect(video?.querySelector('source')?.getAttribute('src')).toBe('asset://promo.mp4')
+    expect(container.textContent).toContain('后续正文。')
+  })
+
+  it('阅读回调变化时不重建已显示的视频元素', () => {
+    const props = {
+      content: '![宣传片](./promo.mp4)',
+      documentPath: 'article.md',
+      resources: { 'promo.mp4': 'asset://promo.mp4' },
+      contentRef: createRef<HTMLElement>(),
+      themeMode: 'light' as const,
+    }
+    const { container, rerender } = render(
+      <MarkdownReader {...props} onOpenDocumentLink={vi.fn()} />,
+    )
+    const video = container.querySelector('video.markdown-video')
+
+    rerender(<MarkdownReader {...props} onOpenDocumentLink={vi.fn()} />)
+
+    expect(container.querySelector('video.markdown-video')).toBe(video)
+  })
+
+  it('把指向本地视频文件的独立链接渲染为播放器', () => {
+    const { container } = render(
+      <MarkdownReader
+        content="[▶ 观看 LightPage 1.5.2 版本宣传片](./LightPage-v1.5.2-promo.mp4)"
+        documentPath="article.md"
+        resources={{ 'lightpage-v1.5.2-promo.mp4': 'asset://promo.mp4' }}
+        contentRef={createRef<HTMLElement>()}
+        themeMode="light"
+      />,
+    )
+
+    expect(container.querySelector('video.markdown-video source')?.getAttribute('src')).toBe('asset://promo.mp4')
+    expect(container.querySelector('a')).toBeNull()
+  })
+
+  it('将视频扩展名的图片语法渲染为 video 元素', () => {
+    const { container } = render(
+      <MarkdownReader
+        content="![宣传片](./promo.mp4)"
+        documentPath="article.md"
+        resources={{ 'promo.mp4': 'asset://promo.mp4' }}
+        contentRef={createRef<HTMLElement>()}
+        themeMode="light"
+      />,
+    )
+
+    expect(container.querySelector('video.markdown-video source')?.getAttribute('src')).toBe('asset://promo.mp4')
+    expect(container.querySelector('img')).toBeNull()
+  })
+
+  it('渲染白名单 Bilibili 嵌入播放器', () => {
+    const { container } = render(
+      <MarkdownReader
+        content="@[bilibili](BV1xx411c7mD)"
+        contentRef={createRef<HTMLElement>()}
+        themeMode="light"
+      />,
+    )
+
+    const iframe = container.querySelector('iframe')
+    expect(iframe?.getAttribute('src')).toContain('player.bilibili.com')
+    expect(iframe?.getAttribute('src')).toContain('BV1xx411c7mD')
+  })
+
   it('Mermaid 语法错误只在图表位置显示源码回退', async () => {
     mermaidRenderMock.mockRejectedValueOnce(new Error('Parse error'))
     render(

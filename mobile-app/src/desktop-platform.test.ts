@@ -205,6 +205,46 @@ describe('desktop platform adapter', () => {
     ])
   })
 
+  it('loads approved relative videos as asset URLs instead of data URLs', async () => {
+    const invokeMock = vi.fn(async (command) => {
+      if (command === 'resolve_relative_resources') {
+        return { './promo.mp4': 'C:\\文章\\promo.mp4' }
+      }
+      return []
+    }) as DesktopPlatformDependencies['invoke']
+    const readFile = vi.fn()
+    const platform = createDesktopPlatform(createDependencies({
+      invoke: invokeMock,
+      readFile,
+    }))
+
+    const snippet = `<video controls>
+  <source src="./promo.mp4" type="video/mp4">
+</video>`
+    const resources = await platform.loadMarkdownResources('C:\\文章\\article.md', snippet)
+
+    expect(resources['promo.mp4']).toMatch(/^https?:\/\/|asset:\/\//)
+    expect(readFile).not.toHaveBeenCalled()
+  })
+
+  it('does not watch local videos while resolving markdown resources', async () => {
+    const invokeMock = vi.fn(async (command) => {
+      if (command === 'resolve_relative_resources') {
+        return {
+          './promo.mp4': 'C:\\文章\\promo.mp4',
+          '封面.png': 'C:\\文章\\封面.png',
+        }
+      }
+      return []
+    }) as DesktopPlatformDependencies['invoke']
+    const platform = createDesktopPlatform(createDependencies({ invoke: invokeMock }))
+    const paths = await platform.resolveMarkdownResourcePaths(
+      'C:\\文章\\article.md',
+      '![封面](封面.png)\n<video controls><source src="./promo.mp4" type="video/mp4"></video>',
+    )
+    expect(paths).toEqual(['C:\\文章\\封面.png'])
+  })
+
   it('loads approved relative images as persistent data URLs', async () => {
     const invokeMock = vi.fn(async (command) => {
       if (command === 'resolve_relative_resources') {

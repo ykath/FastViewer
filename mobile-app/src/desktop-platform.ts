@@ -1,4 +1,10 @@
-import { invoke, isTauri } from '@tauri-apps/api/core'
+import { convertFileSrc, invoke, isTauri } from '@tauri-apps/api/core'
+import {
+  extractLocalMarkdownImageSources,
+  extractLocalMarkdownMediaSources,
+  isVideoPath,
+  normalizeResourceKey,
+} from './markdown-media'
 import { Capacitor } from '@capacitor/core'
 import { listen } from '@tauri-apps/api/event'
 import { join } from '@tauri-apps/api/path'
@@ -224,28 +230,38 @@ export function createDesktopPlatform(dependencies: DesktopPlatformDependencies 
 
     async loadMarkdownResources(documentPath: string, content: string): Promise<Record<string, string>> {
       if (!isDesktop()) return {}
-      const sources = extractLocalMarkdownImageSources(content).slice(0, MAX_RELATIVE_IMAGES)
-      if (sources.length === 0) return {}
+      const imageSources = extractLocalMarkdownImageSources(content).slice(0, MAX_RELATIVE_IMAGES)
+      const videoSources = extractLocalMarkdownMediaSources(content).slice(0, MAX_RELATIVE_IMAGES)
+      const relativePaths = [...new Set([...imageSources, ...videoSources])]
+      if (relativePaths.length === 0) return {}
       const resolved = await dependencies.invoke<RelativeResourcePaths>('resolve_relative_resources', {
         documentPath,
-        relativePaths: sources,
+        relativePaths,
       })
       const resources = await Promise.all(Object.entries(resolved).map(async ([source, path]) => {
+        const key = normalizeResourceKey(source)
+        if (isVideoPath(source)) {
+          return [key, toDesktopAssetUrl(path)] as const
+        }
         const bytes = await dependencies.readFile(path)
-        return [normalizeResourceKey(source), bytesToImageDataUrl(bytes, path)] as const
+        return [key, bytesToImageDataUrl(bytes, path)] as const
       }))
       return Object.fromEntries(resources)
     },
 
     async resolveMarkdownResourcePaths(documentPath: string, content: string): Promise<string[]> {
       if (!isDesktop()) return []
-      const sources = extractLocalMarkdownImageSources(content).slice(0, MAX_RELATIVE_IMAGES)
-      if (sources.length === 0) return []
+      const imageSources = extractLocalMarkdownImageSources(content).slice(0, MAX_RELATIVE_IMAGES)
+      const videoSources = extractLocalMarkdownMediaSources(content).slice(0, MAX_RELATIVE_IMAGES)
+      const relativePaths = [...new Set([...imageSources, ...videoSources])]
+      if (relativePaths.length === 0) return []
       const resolved = await dependencies.invoke<RelativeResourcePaths>('resolve_relative_resources', {
         documentPath,
-        relativePaths: sources,
+        relativePaths,
       })
-      return Object.values(resolved)
+      return Object.entries(resolved)
+        .filter(([source]) => !isVideoPath(source))
+        .map(([, path]) => path)
     },
 
     async watchDocument(documentId: string, documentPath: string, resourcePaths: string[] = []) {
@@ -395,38 +411,14 @@ function sameDocumentRevision(left: DesktopDocumentRevision, right: DesktopDocum
 
 export const desktopPlatform = createDesktopPlatform()
 
-export function extractLocalMarkdownImageSources(content: string) {
-  const sources: string[] = []
-  const seen = new Set<string>()
-  const imagePattern = /!\[[^\]]*]\(\s*(?:<([^>\r\n]+)>|([^\s)\r\n]+))(?:\s+["'][^"'\r\n]*["'])?\s*\)/g
-  for (const match of content.matchAll(imagePattern)) {
-    const source = (match[1] ?? match[2] ?? '').trim()
-    const localPath = decodeLocalResourcePath(source)
-    if (!localPath || seen.has(localPath)) continue
-    seen.add(localPath)
-    sources.push(localPath)
-  }
-  return sources
-}
+export { extractLocalMarkdownImageSources, extractLocalMarkdownMediaSources } from './markdown-media'
 
-function decodeLocalResourcePath(source: string) {
-  const pathOnly = source.split(/[?#]/, 1)[0]
-  if (!pathOnly || /^(?:[a-z][a-z\d+.-]*:|\/\/|[\\/])/i.test(pathOnly)) return ''
+function toDesktopAssetUrl(path: string) {
   try {
-    return decodeURIComponent(pathOnly)
+    return convertFileSrc(path)
   } catch {
-    return pathOnly
+    return `asset://${path}`
   }
-}
-
-function normalizeResourceKey(source: string) {
-  const normalized: string[] = []
-  for (const part of source.replace(/\\/g, '/').split('/')) {
-    if (!part || part === '.') continue
-    if (part === '..') normalized.pop()
-    else normalized.push(part)
-  }
-  return normalized.join('/').toLowerCase()
 }
 
 function bytesToImageDataUrl(bytes: Uint8Array, path: string) {

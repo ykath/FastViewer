@@ -21,8 +21,11 @@ use workspace::{
 
 const SUPPORTED_EXTENSIONS: &[&str] = &["md", "markdown", "mdown", "html", "htm", "xhtml"];
 const SUPPORTED_IMAGE_EXTENSIONS: &[&str] = &["png", "jpg", "jpeg", "gif", "webp"];
+const SUPPORTED_VIDEO_EXTENSIONS: &[&str] = &["mp4", "webm", "ogg", "ogv", "mov", "m4v"];
 const MAX_RELATIVE_RESOURCES: usize = 64;
+const MAX_RELATIVE_VIDEOS: usize = 16;
 const MAX_RELATIVE_RESOURCE_BYTES: u64 = 20 * 1024 * 1024;
+const MAX_RELATIVE_VIDEO_BYTES: u64 = 512 * 1024 * 1024;
 const MAX_RELATIVE_RESOURCES_TOTAL_BYTES: u64 = 64 * 1024 * 1024;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
@@ -136,6 +139,7 @@ fn resolve_relative_resource_paths(
         .ok_or_else(|| "无法确定 Markdown 文件所在目录".to_string())?;
     let mut total_bytes = 0_u64;
     let mut resolved = HashMap::new();
+    let mut video_count = 0_usize;
 
     for relative_path in relative_paths.into_iter().take(MAX_RELATIVE_RESOURCES) {
         let candidate = Path::new(&relative_path);
@@ -152,22 +156,37 @@ fn resolve_relative_resource_paths(
             .extension()
             .and_then(|value| value.to_str())
             .map(str::to_ascii_lowercase);
-        if !extension
-            .as_deref()
-            .is_some_and(|value| SUPPORTED_IMAGE_EXTENSIONS.contains(&value))
-        {
+        let extension = extension.as_deref();
+        let is_image = extension
+            .is_some_and(|value| SUPPORTED_IMAGE_EXTENSIONS.contains(&value));
+        let is_video = extension
+            .is_some_and(|value| SUPPORTED_VIDEO_EXTENSIONS.contains(&value));
+        if !is_image && !is_video {
+            continue;
+        }
+        if is_video && video_count >= MAX_RELATIVE_VIDEOS {
             continue;
         }
         let Ok(metadata) = fs::metadata(&canonical) else {
             continue;
         };
-        if !metadata.is_file() || metadata.len() > MAX_RELATIVE_RESOURCE_BYTES {
+        let max_bytes = if is_video {
+            MAX_RELATIVE_VIDEO_BYTES
+        } else {
+            MAX_RELATIVE_RESOURCE_BYTES
+        };
+        if !metadata.is_file() || metadata.len() > max_bytes {
             continue;
         }
-        if total_bytes.saturating_add(metadata.len()) > MAX_RELATIVE_RESOURCES_TOTAL_BYTES {
-            break;
+        if is_image {
+            if total_bytes.saturating_add(metadata.len()) > MAX_RELATIVE_RESOURCES_TOTAL_BYTES {
+                break;
+            }
+            total_bytes += metadata.len();
         }
-        total_bytes += metadata.len();
+        if is_video {
+            video_count += 1;
+        }
         resolved.insert(relative_path, canonical);
     }
 
@@ -195,6 +214,16 @@ fn resolve_relative_resources(
     let mut allowed = HashMap::new();
     for (source, path) in resources {
         allow_request(&app, &path)?;
+        let is_video = path
+            .extension()
+            .and_then(|value| value.to_str())
+            .map(str::to_ascii_lowercase)
+            .is_some_and(|value| SUPPORTED_VIDEO_EXTENSIONS.contains(&value.as_str()));
+        if is_video {
+            app.asset_protocol_scope()
+                .allow_file(&path)
+                .map_err(|error| format!("无法授权视频资源访问：{error}"))?;
+        }
         allowed.insert(source, path.to_string_lossy().into_owned());
     }
     Ok(allowed)
@@ -482,6 +511,31 @@ mod tests {
         assert_eq!(
             resources["windows/Windows-首页.png"],
             fs::canonicalize(screenshot).unwrap()
+        );
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn resolves_only_safe_relative_videos_below_the_document_directory() {
+        let root = temp_root();
+        let article_dir = root.join("renders");
+        fs::create_dir_all(&article_dir).unwrap();
+        let markdown = article_dir.join("article.md");
+        let promo = article_dir.join("LightPage-v1.5.2-promo.mp4");
+        fs::write(&markdown, b"# article").unwrap();
+        fs::write(&promo, b"mp4").unwrap();
+
+        let resources = resolve_relative_resource_paths(
+            &markdown,
+            vec!["./LightPage-v1.5.2-promo.mp4".to_string()],
+        )
+        .unwrap();
+
+        assert_eq!(resources.len(), 1);
+        assert_eq!(
+            resources["./LightPage-v1.5.2-promo.mp4"],
+            fs::canonicalize(promo).unwrap()
         );
 
         fs::remove_dir_all(root).unwrap();

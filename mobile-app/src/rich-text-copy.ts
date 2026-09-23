@@ -63,6 +63,7 @@ export async function buildRichTextPayload(
   replaceKatex(clone)
   replaceTaskCheckboxes(clone)
   replaceImageFallbacks(clone)
+  replaceVideoPlayers(clone)
   unwrapMatches(clone, 'mark.search-hit, mark.annotation-highlight')
   unwrapMatches(clone, '.markdown-table-wrap, .render-block')
   clone.querySelectorAll('style, script, button, .mermaid-render-host, .mermaid-status, .mermaid-zoom-overlay').forEach((element) => element.remove())
@@ -230,6 +231,18 @@ function replaceImageFallbacks(root: HTMLElement) {
     const replacement = root.ownerDocument.createElement('span')
     replacement.textContent = `[图片：${text}]`
     fallback.replaceWith(replacement)
+  })
+}
+
+function replaceVideoPlayers(root: HTMLElement) {
+  root.querySelectorAll<HTMLElement>('.markdown-video, .markdown-video-fallback').forEach((element) => {
+    const title = element.getAttribute('title')
+      || element.querySelector('source')?.getAttribute('src')?.split(/[\\/]/).pop()
+      || element.textContent?.trim()
+      || '视频'
+    const replacement = root.ownerDocument.createElement('span')
+    replacement.textContent = title === '视频' ? '[视频]' : `[视频：${title}]`
+    element.replaceWith(replacement)
   })
 }
 

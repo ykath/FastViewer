@@ -42,6 +42,14 @@ describe('Markdown 富文本复制', () => {
     expect(payload.text).toContain('[图片：示意图]')
   })
 
+  it('将视频播放器替换为纯文本占位', async () => {
+    const root = document.createElement('article')
+    root.innerHTML = '<video class="markdown-video" controls><source src="asset://promo.mp4"></video>'
+    const payload = await buildRichTextPayload(root, '视频.md')
+    expect(payload.text).toContain('[视频：promo.mp4]')
+    expect(payload.html).not.toContain('<video')
+  })
+
   it('将 Mermaid 转为图片，编码失败时保留源码', async () => {
     const root = document.createElement('article')
     root.innerHTML = '<figure class="mermaid-diagram" data-mermaid-source="flowchart LR; A-->B"><div class="mermaid-svg"><svg viewBox="0 0 100 50"></svg></div></figure>'

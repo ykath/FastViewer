@@ -347,6 +347,7 @@ function App() {
   const desktopRefreshTimersRef = useRef(new Map<string, number>())
   const desktopRefreshInFlightRef = useRef(new Set<string>())
   const desktopRefreshPendingRef = useRef(new Map<string, 'auto' | 'manual'>())
+  const desktopRevisionRef = useRef(new Map<string, string>())
   const lastDropRef = useRef({ signature: '', receivedAt: 0, processing: false })
   const isDesktop = desktopPlatform.isDesktop()
 
@@ -1171,6 +1172,19 @@ function App() {
         desktopRefreshPendingRef.current.delete(documentId)
         const current = documentsRef.current.find((item) => item.id === documentId)
         if (!current?.sourceUri) return false
+        if (nextTrigger !== 'manual') {
+          try {
+            const revision = await desktopPlatform.getDocumentRevision(current.sourceUri)
+            const fingerprint = `${revision.modifiedAtNanos}:${revision.size}`
+            if (desktopRevisionRef.current.get(documentId) === fingerprint) {
+              if (!desktopRefreshPendingRef.current.has(documentId)) return false
+              continue
+            }
+            desktopRevisionRef.current.set(documentId, fingerprint)
+          } catch {
+            // Fall through when the file is mid-save and the revision cannot be read yet.
+          }
+        }
         try {
           const request = await desktopPlatform.prepareDocument(current.sourceUri, 'picker')
           const bytes = await desktopPlatform.readStableDocument(request)
@@ -1342,6 +1356,7 @@ function App() {
         const revision = await desktopPlatform.getDocumentRevision(documentPath)
         if (disposed) return
         const nextFingerprint = `${revision.modifiedAtNanos}:${revision.size}`
+        if (!desktopRevisionRef.current.has(documentId)) desktopRevisionRef.current.set(documentId, nextFingerprint)
         if (revisionFingerprint !== null && revisionFingerprint !== nextFingerprint) scheduleRefresh(250)
         revisionFingerprint = nextFingerprint
       } catch {

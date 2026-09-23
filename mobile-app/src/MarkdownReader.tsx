@@ -3,6 +3,8 @@ import type React from 'react'
 import { ImageOff } from 'lucide-react'
 import ReactMarkdown, { defaultUrlTransform } from 'react-markdown'
 import type { Components } from 'react-markdown'
+import type { ExtraProps } from 'react-markdown'
+import type { Element } from 'hast'
 import rehypeKatex from 'rehype-katex'
 import remarkGfm from 'remark-gfm'
 import remarkMath from 'remark-math'
@@ -11,6 +13,11 @@ import MermaidDiagram from './MermaidDiagram'
 import rehypeCodeHighlight from './rehype-code-highlight'
 import remarkDisplayMath from './remark-display-math'
 import remarkReferenceBreaks from './remark-reference-breaks'
+import remarkVideo, { markdownVideoHandler } from './remark-video'
+import { defaultHandlers } from 'mdast-util-to-hast'
+import type { PluggableList } from 'unified'
+import MarkdownVideo from './MarkdownVideo'
+import { isVideoPath, normalizeMarkdownVideoHtml, parseMarkdownVideoPayload } from './markdown-media'
 import type { ThemeMode } from './reader-settings'
 import { buildRenderPlan, createRenderPlan, reconcileRenderPlans } from './render-plan'
 import type { RenderBlock, RenderPlan } from './render-plan'
@@ -33,15 +40,23 @@ type MarkdownReaderProps = {
 }
 
 const PROGRESSIVE_THRESHOLD = 1024 * 1024
+const remarkPlugins: PluggableList = [remarkGfm, [remarkMath, { singleDollarTextMath: true }], remarkDisplayMath, remarkReferenceBreaks, remarkVideo]
+const remarkRehypeOptions = {
+  handlers: {
+    ...defaultHandlers,
+    markdownVideo: markdownVideoHandler,
+  },
+} as import('remark-rehype').Options
 
 function MarkdownReader({ content, documentPath, resources, contentRef, themeMode, onOpenExternalLink, onOpenDocumentLink, searchQuery = '', forceHeadingId, renderAll = false, onPlanReady, onRenderChange }: MarkdownReaderProps) {
+  const renderContent = useMemo(() => normalizeMarkdownVideoHtml(content), [content])
   const [asyncPlan, setAsyncPlan] = useState<RenderPlan | null>(null)
   const lastCompletedPlanRef = useRef<RenderPlan | null>(null)
-  const renderRevision = useMemo(() => contentRenderRevision(content), [content])
-  const immediatePlan = useMemo(() => content.length < PROGRESSIVE_THRESHOLD ? createRenderPlan(content) : null, [content])
+  const renderRevision = useMemo(() => contentRenderRevision(renderContent), [renderContent])
+  const immediatePlan = useMemo(() => renderContent.length < PROGRESSIVE_THRESHOLD ? createRenderPlan(renderContent) : null, [renderContent])
   const previewPlan = useMemo(
-    () => content.length >= PROGRESSIVE_THRESHOLD ? createRenderPlan(content.slice(0, 128 * 1024)) : null,
-    [content],
+    () => renderContent.length >= PROGRESSIVE_THRESHOLD ? createRenderPlan(renderContent.slice(0, 128 * 1024)) : null,
+    [renderContent],
   )
   const completedPlan = immediatePlan ?? asyncPlan
   const plan = completedPlan ?? previewPlan
@@ -51,7 +66,7 @@ function MarkdownReader({ content, documentPath, resources, contentRef, themeMod
       return undefined
     }
     let cancelled = false
-    void buildRenderPlan(content).then((result) => {
+    void buildRenderPlan(renderContent).then((result) => {
       if (!cancelled) {
         const reconciled = reconcileRenderPlans(lastCompletedPlanRef.current, result)
         lastCompletedPlanRef.current = reconciled
@@ -59,7 +74,7 @@ function MarkdownReader({ content, documentPath, resources, contentRef, themeMod
       }
     })
     return () => { cancelled = true }
-  }, [content, immediatePlan])
+  }, [renderContent, immediatePlan])
   useEffect(() => {
     if (completedPlan) {
       lastCompletedPlanRef.current = completedPlan
@@ -67,14 +82,27 @@ function MarkdownReader({ content, documentPath, resources, contentRef, themeMod
     }
   }, [completedPlan, onPlanReady])
 
+  const externalLinkRef = useRef(onOpenExternalLink)
+  const documentLinkRef = useRef(onOpenDocumentLink)
+  externalLinkRef.current = onOpenExternalLink
+  documentLinkRef.current = onOpenDocumentLink
   const components = useMemo(
-    () => createMarkdownComponents(documentPath, resources, themeMode, onOpenExternalLink, onOpenDocumentLink, {}, renderAll),
-    // Content changes intentionally reset the per-render duplicate-heading counters.
+    () => createMarkdownComponents(
+      documentPath,
+      resources,
+      themeMode,
+      (url) => externalLinkRef.current?.(url),
+      (href) => documentLinkRef.current?.(href),
+      {},
+      renderAll,
+    ),
+    // Heading counters reset with the article when renderContent changes.
+    // Callback identity must not rebuild the component map, or <video> remounts while scrolling.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [content, documentPath, resources, themeMode, onOpenExternalLink, onOpenDocumentLink, renderAll],
+    [renderContent, documentPath, resources, themeMode, renderAll],
   )
   if (!plan) return <article key={renderRevision} className="reader-content markdown-body" ref={contentRef}>正在生成大文档阅读视图...</article>
-  if (content.length >= PROGRESSIVE_THRESHOLD) {
+  if (renderContent.length >= PROGRESSIVE_THRESHOLD) {
     return (
       <article
         key={renderRevision}
@@ -110,12 +138,13 @@ function MarkdownReader({ content, documentPath, resources, contentRef, themeMod
     <article key={renderRevision} className="reader-content markdown-body" ref={contentRef}>
       <style data-search-exclude="true">{katexStyles}</style>
       <ReactMarkdown
-        remarkPlugins={[remarkGfm, [remarkMath, { singleDollarTextMath: true }], remarkDisplayMath, remarkReferenceBreaks]}
+        remarkPlugins={[...remarkPlugins]}
+        remarkRehypeOptions={remarkRehypeOptions}
         rehypePlugins={[rehypeCodeHighlight, [rehypeKatex, { throwOnError: false, trust: false }]]}
         components={components}
         urlTransform={markdownUrlTransform}
       >
-        {content}
+        {renderContent}
       </ReactMarkdown>
     </article>
   )
@@ -210,8 +239,27 @@ function createMarkdownComponents(
       )
     },
     img({ alt, src }) {
-      const resolvedSrc = resolveResource(src ?? '')
+      const rawSrc = src ?? ''
+      if (isVideoPath(rawSrc)) {
+        return (
+          <MarkdownVideo
+            key={rawSrc}
+            payload={{ variant: 'file', sources: [{ src: rawSrc }], controls: true, label: alt || undefined }}
+            resolveSrc={resolveResource}
+          />
+        )
+      }
+      const resolvedSrc = resolveResource(rawSrc)
       return <ImgWithFallback key={resolvedSrc} src={resolvedSrc} alt={alt ?? ''} />
+    },
+    div({ node, className, children, ...props }: React.ComponentProps<'div'> & ExtraProps) {
+      const property = (node as Element | undefined)?.properties?.dataLpVideo
+      const rawPayload = typeof property === 'string' ? property : Array.isArray(property) ? property[0] : undefined
+      const payload = parseMarkdownVideoPayload(rawPayload)
+      if (payload) {
+        return <MarkdownVideo payload={payload} resolveSrc={resolveResource} />
+      }
+      return <div className={className} {...props}>{children}</div>
     },
     li({ children, ...props }) {
       const hasCheckbox = Array.isArray(children) && children.some(
@@ -246,12 +294,24 @@ const ProgressiveBlock = memo(function ProgressiveBlock({
   onRenderChange?: () => void
 }) {
   const hostRef = useRef<HTMLDivElement>(null)
+  const externalLinkRef = useRef(onOpenExternalLink)
+  const documentLinkRef = useRef(onOpenDocumentLink)
+  externalLinkRef.current = onOpenExternalLink
+  documentLinkRef.current = onOpenDocumentLink
   const [visible, setVisible] = useState(initiallyVisible || forced)
   const [height, setHeight] = useState(block.estimatedHeight)
   const keepAliveAfterMount = /```\s*mermaid\b/i.test(block.source)
   const components = useMemo(
-    () => createMarkdownComponents(documentPath, resources, themeMode, onOpenExternalLink, onOpenDocumentLink, block.headingCountsBefore, eagerMermaid),
-    [block.headingCountsBefore, documentPath, eagerMermaid, onOpenDocumentLink, onOpenExternalLink, resources, themeMode],
+    () => createMarkdownComponents(
+      documentPath,
+      resources,
+      themeMode,
+      (url) => externalLinkRef.current?.(url),
+      (href) => documentLinkRef.current?.(href),
+      block.headingCountsBefore,
+      eagerMermaid,
+    ),
+    [block.headingCountsBefore, documentPath, eagerMermaid, resources, themeMode],
   )
 
   useEffect(() => {
@@ -299,7 +359,8 @@ const ProgressiveBlock = memo(function ProgressiveBlock({
     >
       {visible && (
         <ReactMarkdown
-          remarkPlugins={[remarkGfm, [remarkMath, { singleDollarTextMath: true }], remarkDisplayMath, remarkReferenceBreaks]}
+          remarkPlugins={[...remarkPlugins]}
+          remarkRehypeOptions={remarkRehypeOptions}
           rehypePlugins={[rehypeCodeHighlight, [rehypeKatex, { throwOnError: false, trust: false }]]}
           components={components}
           urlTransform={markdownUrlTransform}

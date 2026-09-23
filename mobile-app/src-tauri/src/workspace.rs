@@ -413,6 +413,10 @@ pub fn watch_document(
     let mut targets = HashSet::from([target.clone()]);
     for path in resource_paths {
         if let Ok(canonical) = fs::canonicalize(path) {
+            // Playback reads must not schedule a document reload.
+            if is_playback_resource(&canonical) {
+                continue;
+            }
             targets.insert(canonical);
         }
     }
@@ -427,10 +431,9 @@ pub fn watch_document(
             let Ok(event) = result else {
                 return;
             };
-            let relevant = event
-                .paths
-                .iter()
-                .any(|path| event_path_matches_targets(path, &callback_targets));
+            let relevant = event.paths.iter().any(|path| {
+                event_path_matches_targets(path, &callback_targets) && !is_playback_resource(path)
+            });
             if !relevant {
                 return;
             }
@@ -462,6 +465,14 @@ pub fn watch_document(
         .map_err(|_| "文件监听注册表不可用".to_string())?
         .insert(document_id, DocumentWatch { _watcher: watcher });
     Ok(())
+}
+
+fn is_playback_resource(path: &Path) -> bool {
+    const VIDEO_EXTENSIONS: &[&str] = &["mp4", "webm", "ogg", "ogv", "mov", "m4v"];
+    path.extension()
+        .and_then(|value| value.to_str())
+        .map(str::to_ascii_lowercase)
+        .is_some_and(|value| VIDEO_EXTENSIONS.contains(&value.as_str()))
 }
 
 fn event_path_matches_targets(path: &Path, targets: &HashSet<PathBuf>) -> bool {
@@ -958,6 +969,14 @@ mod tests {
         ));
 
         fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn playback_resources_are_not_document_changes() {
+        assert!(is_playback_resource(Path::new("renders/promo.mp4")));
+        assert!(is_playback_resource(Path::new("clip.WEBM")));
+        assert!(!is_playback_resource(Path::new("article.md")));
+        assert!(!is_playback_resource(Path::new("cover.png")));
     }
 
     #[test]
