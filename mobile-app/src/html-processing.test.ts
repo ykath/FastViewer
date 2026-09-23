@@ -4,6 +4,7 @@ import { describe, expect, it } from 'vitest'
 import {
   buildSafeHtmlDocument,
   classifyMarkdownLink,
+  getDocumentLinkBasePath,
   isSameDocumentPath,
   resolveDesktopDocumentPath,
   resolveDocumentLinkHref,
@@ -35,6 +36,27 @@ describe('markdown document links', () => {
   it('resolves desktop absolute paths from source files', () => {
     expect(resolveDesktopDocumentPath('C:\\Docs\\Guide\\readme.md', '../other.md')).toEqual({
       path: 'C:\\Docs\\other.md',
+      hash: '',
+    })
+    expect(resolveDesktopDocumentPath('C:\\Docs\\Guide\\readme.md', './other.md')).toEqual({
+      path: 'C:\\Docs\\Guide\\other.md',
+      hash: '',
+    })
+    expect(resolveDesktopDocumentPath('C:\\Docs\\Guide\\nested\\readme.md', '../../other.md')).toEqual({
+      path: 'C:\\Docs\\other.md',
+      hash: '',
+    })
+  })
+
+  it('prefers archive relative path when resolving package links', () => {
+    expect(getDocumentLinkBasePath({
+      sourceUri: 'D:\\archives\\notes.zip',
+      fileName: 'level2.md',
+      archiveRelativePath: 'docs/nested/level2.md',
+      packageId: 'pkg',
+    })).toBe('docs/nested/level2.md')
+    expect(resolveDocumentLinkHref('../level1.md', 'docs/nested/level2.md', true)).toEqual({
+      path: 'docs/level1.md',
       hash: '',
     })
   })

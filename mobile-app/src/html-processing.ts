@@ -29,6 +29,40 @@ export function classifyMarkdownLink(href: string | undefined): MarkdownLinkKind
   return 'other'
 }
 
+export type DocumentLinkContext = {
+  sourceUri?: string
+  fileName: string
+  archiveRelativePath?: string
+  packageId?: string
+  archiveStorageId?: string
+}
+
+export function normalizeWindowsDocumentPath(path: string) {
+  const trimmed = path.trim()
+  if (trimmed.startsWith('\\\\?\\')) return trimmed.slice(4)
+  return trimmed
+}
+
+export function isDesktopAbsolutePath(path?: string) {
+  if (!path) return false
+  const normalized = normalizeWindowsDocumentPath(path).replace(/\\/g, '/')
+  return /^[a-zA-Z]:\/.*/.test(normalized) || /^[a-zA-Z]:$/.test(normalized)
+}
+
+export function getDocumentLinkBasePath(context: DocumentLinkContext) {
+  if (context.archiveRelativePath) {
+    return context.archiveRelativePath.replace(/\\/g, '/')
+  }
+  if (isDesktopAbsolutePath(context.sourceUri)) {
+    return normalizeWindowsDocumentPath(context.sourceUri ?? '').replace(/\\/g, '/')
+  }
+  return context.fileName.replace(/\\/g, '/')
+}
+
+export function shouldConfineDocumentLinks(context: DocumentLinkContext) {
+  return Boolean(context.packageId || context.archiveStorageId)
+}
+
 export function resolveDocumentLinkHref(
   href: string,
   currentFilePath: string,
@@ -58,11 +92,21 @@ export function resolveDocumentLinkHref(
 }
 
 export function resolveDesktopDocumentPath(sourceUri: string, href: string): ResolvedDocumentLink | null {
-  const resolved = resolveDocumentLinkHref(href, sourceUri.replace(/\\/g, '/'), false)
+  const cleanSource = normalizeWindowsDocumentPath(sourceUri)
+  const resolved = resolveDocumentLinkHref(href, cleanSource.replace(/\\/g, '/'), false)
   if (!resolved) return null
-  const useBackslash = /\\/.test(sourceUri)
+
+  let absolute = resolved.path.replace(/\\/g, '/')
+  if (!isDesktopAbsolutePath(absolute)) {
+    const baseDir = dirname(cleanSource.replace(/\\/g, '/'))
+    const joined = normalizeJoinedDocumentPath(baseDir, absolute, false)
+    if (!joined) return null
+    absolute = joined
+  }
+
+  const useBackslash = /\\/.test(cleanSource)
   return {
-    path: useBackslash ? resolved.path.replace(/\//g, '\\') : resolved.path,
+    path: useBackslash ? absolute.replace(/\//g, '\\') : absolute,
     hash: resolved.hash,
   }
 }
@@ -261,18 +305,30 @@ function hasViewableDocumentExtension(path: string) {
 }
 
 function normalizeJoinedDocumentPath(baseDir: string, relativePath: string, confineToPackageRoot: boolean) {
-  const parts = `${baseDir}/${relativePath}`.replace(/\\/g, '/').split('/')
+  const combined = `${baseDir}/${relativePath}`.replace(/\\/g, '/')
+  let root = ''
+  let segments: string[]
+  const driveMatch = /^([a-zA-Z]:)\/(.*)$/.exec(combined) ?? /^([a-zA-Z]:)$/.exec(combined)
+  if (driveMatch) {
+    root = `${driveMatch[1]}/`
+    segments = (driveMatch[2] ?? '').split('/').filter((part) => part.length > 0)
+  } else {
+    segments = combined.split('/').filter((part) => part.length > 0)
+  }
+
   const normalized: string[] = []
-  for (const part of parts) {
-    if (!part || part === '.') continue
+  for (const part of segments) {
+    if (part === '.') continue
     if (part === '..') {
       if (confineToPackageRoot && normalized.length === 0) return null
-      normalized.pop()
+      if (normalized.length > 0) normalized.pop()
       continue
     }
     normalized.push(part)
   }
-  return normalized.join('/')
+
+  const joined = normalized.join('/')
+  return root ? `${root}${joined}` : joined
 }
 
 function normalizeResourcePath(documentDir: string, resourcePath: string) {

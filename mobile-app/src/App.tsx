@@ -51,10 +51,13 @@ import {
   buildSafeHtmlDocument,
   classifyMarkdownLink,
   extractMarkdownHeadings,
+  getDocumentLinkBasePath,
+  isDesktopAbsolutePath,
   isSameDocumentPath,
   resolveDesktopDocumentPath,
   resolveDocumentLinkHref,
   rewriteRelativeResources,
+  shouldConfineDocumentLinks,
 } from './html-processing'
 import type { HeadingItem, HtmlRenderInfo } from './html-processing'
 import { DEFAULT_READER_SETTINGS, nextThemePreference, themePreferenceLabel } from './reader-settings'
@@ -1969,10 +1972,15 @@ function ReaderPage({
   const handleOpenDocumentLink = useCallback((href: string) => {
     if (classifyMarkdownLink(href) !== 'document') return
 
-    const currentFilePath = document.sourceUri && /^[a-zA-Z]:[\\/]/.test(document.sourceUri)
-      ? document.sourceUri.replace(/\\/g, '/')
-      : (document.archiveRelativePath ?? document.fileName).replace(/\\/g, '/')
-    const resolved = resolveDocumentLinkHref(href, currentFilePath, Boolean(document.packageId))
+    const linkContext = {
+      sourceUri: document.sourceUri,
+      fileName: document.fileName,
+      archiveRelativePath: document.archiveRelativePath,
+      packageId: document.packageId,
+      archiveStorageId: document.archiveStorageId,
+    }
+    const currentFilePath = getDocumentLinkBasePath(linkContext)
+    const resolved = resolveDocumentLinkHref(href, currentFilePath, shouldConfineDocumentLinks(linkContext))
     if (!resolved) {
       onShowToast('无法打开该文档链接', 'warning')
       return
@@ -1986,8 +1994,8 @@ function ReaderPage({
       return
     }
 
-    if (document.sourceUri && /^[a-zA-Z]:[\\/]/.test(document.sourceUri)) {
-      const desktopPath = resolveDesktopDocumentPath(document.sourceUri, href)
+    if (!document.packageId && !document.archiveStorageId && isDesktopAbsolutePath(document.sourceUri)) {
+      const desktopPath = resolveDesktopDocumentPath(document.sourceUri!, href)
       if (!desktopPath) {
         onShowToast('无法打开该文档链接', 'warning')
         return
@@ -1996,7 +2004,7 @@ function ReaderPage({
       return
     }
 
-    if (document.packageId) {
+    if (document.packageId || document.archiveStorageId) {
       const normalizedTarget = resolved.path.replace(/\\/g, '/').toLocaleLowerCase()
       const target = packageDocuments.find((item) =>
         (item.archiveRelativePath ?? item.fileName).replace(/\\/g, '/').toLocaleLowerCase() === normalizedTarget,
