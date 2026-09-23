@@ -67,6 +67,22 @@ describe('MarkdownReader', () => {
     expect(container.querySelector('h2')?.textContent).toBe('2.1 CLI 命令行接口 (cli.py) 与 配置')
   })
 
+  it('阅读回调变化后标题锚点仍与目录一致', () => {
+    const content = '## 章节\n\n正文\n\n## 章节'
+    const headings = extractMarkdownHeadings(content)
+    const props = {
+      content,
+      contentRef: createRef<HTMLElement>(),
+      themeMode: 'light' as const,
+    }
+    const { container, rerender } = render(
+      <MarkdownReader {...props} onOpenDocumentLink={vi.fn()} />,
+    )
+    rerender(<MarkdownReader {...props} onOpenDocumentLink={vi.fn()} />)
+    const rendered = Array.from(container.querySelectorAll('h2'), (heading) => heading.id)
+    expect(rendered).toEqual(headings.map((heading) => heading.id))
+  })
+
   it('绘制行内和块级公式，并把本地 KaTeX 样式包含在可导出内容中', () => {
     const contentRef = createRef<HTMLElement>()
     const { container } = render(

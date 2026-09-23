@@ -84,19 +84,20 @@ function MarkdownReader({ content, documentPath, resources, contentRef, themeMod
 
   const externalLinkRef = useRef(onOpenExternalLink)
   const documentLinkRef = useRef(onOpenDocumentLink)
+  const headingCountsRef = useRef(new Map<string, number>())
   externalLinkRef.current = onOpenExternalLink
   documentLinkRef.current = onOpenDocumentLink
+  headingCountsRef.current = new Map()
   const components = useMemo(
     () => createMarkdownComponents(
       documentPath,
       resources,
       themeMode,
+      headingCountsRef,
       (url) => externalLinkRef.current?.(url),
       (href) => documentLinkRef.current?.(href),
-      {},
       renderAll,
     ),
-    // Heading counters reset with the article when renderContent changes.
     // Callback identity must not rebuild the component map, or <video> remounts while scrolling.
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [renderContent, documentPath, resources, themeMode, renderAll],
@@ -167,15 +168,14 @@ export default memo(MarkdownReader, (previous, next) => {
 })
 
 function createMarkdownComponents(
-  documentPath?: string,
-  resources?: Record<string, string>,
-  themeMode: ThemeMode = 'light',
+  documentPath: string | undefined,
+  resources: Record<string, string> | undefined,
+  themeMode: ThemeMode,
+  headingCountsRef: { current: Map<string, number> },
   onOpenExternalLink?: (url: string) => void,
   onOpenDocumentLink?: (href: string) => void,
-  initialHeadingCounts: Record<string, number> = {},
   eagerMermaid = false,
 ): Components {
-  const used = new Map<string, number>(Object.entries(initialHeadingCounts))
   const documentDir = dirname(documentPath ?? '')
   const resolveResource = (src: string) => {
     if (!resources) return src
@@ -187,6 +187,7 @@ function createMarkdownComponents(
     return function Heading({ children, ...props }: React.HTMLAttributes<HTMLHeadingElement>) {
       const text = childrenToText(children)
       const baseId = slugify(text)
+      const used = headingCountsRef.current
       const count = used.get(baseId) ?? 0
       used.set(baseId, count + 1)
       const id = count ? `${baseId}-${count}` : baseId
@@ -296,8 +297,10 @@ const ProgressiveBlock = memo(function ProgressiveBlock({
   const hostRef = useRef<HTMLDivElement>(null)
   const externalLinkRef = useRef(onOpenExternalLink)
   const documentLinkRef = useRef(onOpenDocumentLink)
+  const headingCountsRef = useRef(new Map<string, number>())
   externalLinkRef.current = onOpenExternalLink
   documentLinkRef.current = onOpenDocumentLink
+  headingCountsRef.current = new Map(Object.entries(block.headingCountsBefore))
   const [visible, setVisible] = useState(initiallyVisible || forced)
   const [height, setHeight] = useState(block.estimatedHeight)
   const keepAliveAfterMount = /```\s*mermaid\b/i.test(block.source)
@@ -306,12 +309,12 @@ const ProgressiveBlock = memo(function ProgressiveBlock({
       documentPath,
       resources,
       themeMode,
+      headingCountsRef,
       (url) => externalLinkRef.current?.(url),
       (href) => documentLinkRef.current?.(href),
-      block.headingCountsBefore,
       eagerMermaid,
     ),
-    [block.headingCountsBefore, documentPath, eagerMermaid, resources, themeMode],
+    [documentPath, eagerMermaid, resources, themeMode],
   )
 
   useEffect(() => {
