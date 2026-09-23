@@ -47,7 +47,15 @@ import type { DocumentRecord, DocumentType } from './document-types'
 import { useDocumentStore } from './use-document-store'
 import { finishPerformanceSpan, startPerformanceSpan } from './performance-metrics'
 import { decodeDocumentBytes } from './decode-document'
-import { buildSafeHtmlDocument, extractMarkdownHeadings, rewriteRelativeResources } from './html-processing'
+import {
+  buildSafeHtmlDocument,
+  classifyMarkdownLink,
+  extractMarkdownHeadings,
+  isSameDocumentPath,
+  resolveDesktopDocumentPath,
+  resolveDocumentLinkHref,
+  rewriteRelativeResources,
+} from './html-processing'
 import type { HeadingItem, HtmlRenderInfo } from './html-processing'
 import { DEFAULT_READER_SETTINGS, nextThemePreference, themePreferenceLabel } from './reader-settings'
 import type { ReaderSettings, ThemeMode } from './reader-settings'
@@ -323,6 +331,8 @@ function App() {
   const [directorySortMode, setDirectorySortMode] = useState<DirectorySortMode>('name-asc')
   const [commandPaletteOpen, setCommandPaletteOpen] = useState(false)
   const [commandQuery, setCommandQuery] = useState('')
+  const [readerBackStack, setReaderBackStack] = useState<string[]>([])
+  const [linkNavigationHeadingId, setLinkNavigationHeadingId] = useState<string | null>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
   const archiveCleanupStartedRef = useRef(false)
   const openQueueRunningRef = useRef(false)
@@ -448,7 +458,10 @@ function App() {
     })
   }, [setDocuments])
 
-  const openDocument = async (doc: DocumentRecord) => {
+  const openDocument = async (doc: DocumentRecord, options?: { preserveBackStack?: boolean }) => {
+    if (!options?.preserveBackStack) {
+      setReaderBackStack([])
+    }
     let openedDocument = doc
     if (doc.payloadLoaded === false) {
       setView('loading')
@@ -1098,8 +1111,17 @@ function App() {
     showToast(pinned ? '已取消目录收藏' : '已固定当前目录', 'success')
   }
 
-  const openDirectoryDocument = async (path: string) => {
+  const openDirectoryDocument = async (
+    path: string,
+    options?: { fromDocumentLink?: boolean; headingId?: string },
+  ) => {
     try {
+      if (options?.fromDocumentLink) {
+        if (activeDocumentId) setReaderBackStack((stack) => [...stack, activeDocumentId])
+        if (options.headingId) setLinkNavigationHeadingId(options.headingId)
+      } else {
+        setReaderBackStack([])
+      }
       const request = await desktopPlatform.prepareDocument(path, 'picker')
       setDirectoryBrowser(null)
       await importDesktopRequest(request)
@@ -1107,6 +1129,18 @@ function App() {
       showToast(error instanceof Error ? error.message : '目录中的文件无法打开', 'warning')
     }
   }
+
+  const handleReaderBack = useCallback(() => {
+    if (readerBackStack.length > 0) {
+      const previousId = readerBackStack[readerBackStack.length - 1]
+      setReaderBackStack((stack) => stack.slice(0, -1))
+      setActiveDocumentId(previousId)
+      setView('reader')
+      return
+    }
+    setReaderBackStack([])
+    setView('home')
+  }, [readerBackStack])
 
   const browsePinnedDirectory = async (directory: PinnedDirectory) => {
     if (directoryBrowser && normalizeDirectoryPath(directoryBrowser.path) === normalizeDirectoryPath(directory.path)) {
@@ -1418,12 +1452,22 @@ function App() {
               : []}
             settings={settings}
             resolvedTheme={resolvedTheme}
-            onBack={() => setView('home')}
+            onBack={handleReaderBack}
             onUpdate={updateActiveDocument}
             onReload={activeDocument.sourceUri ? () => refreshDesktopDocument(activeDocument.id, 'manual') : undefined}
             onShowToast={showToast}
             onSetSettings={setSettings}
             onOpenPackageDocument={(item) => { void openDocument(item) }}
+            onOpenPackageDocumentFromLink={(item, options) => {
+              if (options.fromDocumentLink && activeDocumentId) {
+                setReaderBackStack((stack) => [...stack, activeDocumentId])
+              }
+              if (options.headingId) setLinkNavigationHeadingId(options.headingId)
+              void openDocument(item, { preserveBackStack: true })
+            }}
+            onOpenDesktopDocument={(path, options) => { void openDirectoryDocument(path, options) }}
+            linkNavigationHeadingId={linkNavigationHeadingId}
+            onConsumeLinkNavigationHeading={() => setLinkNavigationHeadingId(null)}
             annotationRepository={documentRepository}
             directoryListing={currentDirectory}
             directorySortMode={directorySortMode}
@@ -1812,6 +1856,16 @@ type ReaderPageProps = {
   onShowToast: (message: string, tone?: ToastState['tone']) => void
   onSetSettings: (settings: ReaderSettings) => void
   onOpenPackageDocument: (document: DocumentRecord) => void
+  onOpenPackageDocumentFromLink: (
+    document: DocumentRecord,
+    options: { fromDocumentLink: boolean; headingId: string },
+  ) => void
+  onOpenDesktopDocument: (
+    path: string,
+    options: { fromDocumentLink: boolean; headingId: string },
+  ) => void
+  linkNavigationHeadingId: string | null
+  onConsumeLinkNavigationHeading: () => void
   annotationRepository: DocumentRepository
   directoryListing: DesktopDirectoryListing | null
   directorySortMode: DirectorySortMode
@@ -1832,6 +1886,10 @@ function ReaderPage({
   onShowToast,
   onSetSettings,
   onOpenPackageDocument,
+  onOpenPackageDocumentFromLink,
+  onOpenDesktopDocument,
+  linkNavigationHeadingId,
+  onConsumeLinkNavigationHeading,
   annotationRepository,
   directoryListing,
   directorySortMode,
@@ -1908,6 +1966,51 @@ function ReaderPage({
   const handleOpenExternalLink = useCallback((url: string) => {
     void desktopPlatform.openExternalLink(url)
   }, [])
+  const handleOpenDocumentLink = useCallback((href: string) => {
+    if (classifyMarkdownLink(href) !== 'document') return
+
+    const currentFilePath = document.sourceUri && /^[a-zA-Z]:[\\/]/.test(document.sourceUri)
+      ? document.sourceUri.replace(/\\/g, '/')
+      : (document.archiveRelativePath ?? document.fileName).replace(/\\/g, '/')
+    const resolved = resolveDocumentLinkHref(href, currentFilePath, Boolean(document.packageId))
+    if (!resolved) {
+      onShowToast('无法打开该文档链接', 'warning')
+      return
+    }
+
+    if (isSameDocumentPath(resolved.path, currentFilePath)) {
+      if (resolved.hash) {
+        setActiveHeadingId(resolved.hash)
+        window.document.getElementById(resolved.hash)?.scrollIntoView({ block: 'start' })
+      }
+      return
+    }
+
+    if (document.sourceUri && /^[a-zA-Z]:[\\/]/.test(document.sourceUri)) {
+      const desktopPath = resolveDesktopDocumentPath(document.sourceUri, href)
+      if (!desktopPath) {
+        onShowToast('无法打开该文档链接', 'warning')
+        return
+      }
+      onOpenDesktopDocument(desktopPath.path, { fromDocumentLink: true, headingId: desktopPath.hash })
+      return
+    }
+
+    if (document.packageId) {
+      const normalizedTarget = resolved.path.replace(/\\/g, '/').toLocaleLowerCase()
+      const target = packageDocuments.find((item) =>
+        (item.archiveRelativePath ?? item.fileName).replace(/\\/g, '/').toLocaleLowerCase() === normalizedTarget,
+      )
+      if (!target) {
+        onShowToast('压缩包中找不到该文档', 'warning')
+        return
+      }
+      onOpenPackageDocumentFromLink(target, { fromDocumentLink: true, headingId: resolved.hash })
+      return
+    }
+
+    onShowToast('无法打开该文档链接', 'warning')
+  }, [document, onOpenDesktopDocument, onOpenPackageDocumentFromLink, onShowToast, packageDocuments])
   const handleRenderPlanReady = useCallback((plan: { plainText: string; revision?: string }) => {
     setRenderPlainText(plan.plainText)
     const revision = plan.revision ?? `${document.id}:${plan.plainText.length}`
@@ -2238,7 +2341,8 @@ function ReaderPage({
     setTocOpen(false)
     setDesktopTocOpen(true)
     setMenuOpen(false)
-    setActiveHeadingId(document.lastReadHeadingId ?? '')
+    const pendingHeadingId = linkNavigationHeadingId
+    setActiveHeadingId(pendingHeadingId ?? document.lastReadHeadingId ?? '')
     setReaderMode(document.fileSize >= FILE_SIZE_DANGER ? 'source' : 'rendered')
     setRenderFailed(false)
     setAllowExternalOnce(false)
@@ -2249,12 +2353,13 @@ function ReaderPage({
     window.setTimeout(() => {
       const scroller = scrollRef.current
       if (!scroller) return
-      if (document.lastReadHeadingId) {
+      const headingId = pendingHeadingId ?? document.lastReadHeadingId
+      if (headingId) {
         let target: HTMLElement | null | undefined
         try {
           target = document.fileType === 'html'
-            ? iframeRef.current?.contentDocument?.getElementById(document.lastReadHeadingId)
-            : window.document.getElementById(document.lastReadHeadingId)
+            ? iframeRef.current?.contentDocument?.getElementById(headingId)
+            : window.document.getElementById(headingId)
         } catch {
           target = null
         }
@@ -2269,7 +2374,8 @@ function ReaderPage({
         : document.lastReadPosition
       scroller.scrollTo({ top: restoredTop })
     }, 0)
-  }, [document.fileSize, document.fileType, document.id, document.lastReadHeadingId, document.lastReadPosition, document.lastReadProgress])
+    if (pendingHeadingId) onConsumeLinkNavigationHeading()
+  }, [document.fileSize, document.fileType, document.id, document.lastReadHeadingId, document.lastReadPosition, document.lastReadProgress, linkNavigationHeadingId, onConsumeLinkNavigationHeading])
 
   const getSearchContainer = useCallback(() => {
     if (document.fileType === 'html') {
@@ -3526,6 +3632,7 @@ function ReaderPage({
               contentRef={contentRef}
               themeMode={resolvedTheme}
               onOpenExternalLink={handleOpenExternalLink}
+              onOpenDocumentLink={handleOpenDocumentLink}
               searchQuery={debouncedQuery}
               forceHeadingId={activeHeadingId}
               renderAll={richCopyRenderAll}

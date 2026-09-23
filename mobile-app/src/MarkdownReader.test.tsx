@@ -156,6 +156,26 @@ describe('MarkdownReader', () => {
     expect(mermaidInitializeMock).toHaveBeenLastCalledWith(expect.objectContaining({ theme: 'dark' }))
   })
 
+  it('点击相对 Markdown 链接时回调文档打开处理', () => {
+    const onOpenDocumentLink = vi.fn()
+    const onOpenExternalLink = vi.fn()
+    render(
+      <MarkdownReader
+        content="[指南](./guide.md)\n\n[站点](https://example.com)"
+        contentRef={createRef<HTMLElement>()}
+        themeMode="light"
+        onOpenDocumentLink={onOpenDocumentLink}
+        onOpenExternalLink={onOpenExternalLink}
+      />,
+    )
+
+    fireEvent.click(screen.getByRole('link', { name: '指南' }))
+    fireEvent.click(screen.getByRole('link', { name: '站点' }))
+
+    expect(onOpenDocumentLink).toHaveBeenCalledWith('./guide.md')
+    expect(onOpenExternalLink).toHaveBeenCalledWith('https://example.com')
+  })
+
   it('父组件发生无关重渲染时保持 Mermaid SVG 实例稳定', async () => {
     const contentRef = createRef<HTMLElement>()
     const onOpenExternalLink = vi.fn()

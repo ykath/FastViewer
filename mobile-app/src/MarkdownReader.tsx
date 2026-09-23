@@ -14,6 +14,7 @@ import remarkReferenceBreaks from './remark-reference-breaks'
 import type { ThemeMode } from './reader-settings'
 import { buildRenderPlan, createRenderPlan, reconcileRenderPlans } from './render-plan'
 import type { RenderBlock, RenderPlan } from './render-plan'
+import { classifyMarkdownLink } from './html-processing'
 import { contentRenderRevision } from './render-revision'
 
 type MarkdownReaderProps = {
@@ -23,6 +24,7 @@ type MarkdownReaderProps = {
   contentRef: React.RefObject<HTMLElement | null>
   themeMode: ThemeMode
   onOpenExternalLink?: (url: string) => void
+  onOpenDocumentLink?: (href: string) => void
   searchQuery?: string
   forceHeadingId?: string
   renderAll?: boolean
@@ -32,7 +34,7 @@ type MarkdownReaderProps = {
 
 const PROGRESSIVE_THRESHOLD = 1024 * 1024
 
-function MarkdownReader({ content, documentPath, resources, contentRef, themeMode, onOpenExternalLink, searchQuery = '', forceHeadingId, renderAll = false, onPlanReady, onRenderChange }: MarkdownReaderProps) {
+function MarkdownReader({ content, documentPath, resources, contentRef, themeMode, onOpenExternalLink, onOpenDocumentLink, searchQuery = '', forceHeadingId, renderAll = false, onPlanReady, onRenderChange }: MarkdownReaderProps) {
   const [asyncPlan, setAsyncPlan] = useState<RenderPlan | null>(null)
   const lastCompletedPlanRef = useRef<RenderPlan | null>(null)
   const renderRevision = useMemo(() => contentRenderRevision(content), [content])
@@ -66,10 +68,10 @@ function MarkdownReader({ content, documentPath, resources, contentRef, themeMod
   }, [completedPlan, onPlanReady])
 
   const components = useMemo(
-    () => createMarkdownComponents(documentPath, resources, themeMode, onOpenExternalLink, {}, renderAll),
+    () => createMarkdownComponents(documentPath, resources, themeMode, onOpenExternalLink, onOpenDocumentLink, {}, renderAll),
     // Content changes intentionally reset the per-render duplicate-heading counters.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [content, documentPath, resources, themeMode, onOpenExternalLink, renderAll],
+    [content, documentPath, resources, themeMode, onOpenExternalLink, onOpenDocumentLink, renderAll],
   )
   if (!plan) return <article key={renderRevision} className="reader-content markdown-body" ref={contentRef}>正在生成大文档阅读视图...</article>
   if (content.length >= PROGRESSIVE_THRESHOLD) {
@@ -97,6 +99,7 @@ function MarkdownReader({ content, documentPath, resources, contentRef, themeMod
             resources={resources}
             themeMode={themeMode}
             onOpenExternalLink={onOpenExternalLink}
+            onOpenDocumentLink={onOpenDocumentLink}
             onRenderChange={onRenderChange}
           />
         ))}
@@ -125,6 +128,7 @@ export default memo(MarkdownReader, (previous, next) => {
     && previous.contentRef === next.contentRef
     && previous.themeMode === next.themeMode
     && previous.onOpenExternalLink === next.onOpenExternalLink
+    && previous.onOpenDocumentLink === next.onOpenDocumentLink
     && previous.renderAll === next.renderAll
     && previous.onPlanReady === next.onPlanReady
     && previous.onRenderChange === next.onRenderChange
@@ -138,6 +142,7 @@ function createMarkdownComponents(
   resources?: Record<string, string>,
   themeMode: ThemeMode = 'light',
   onOpenExternalLink?: (url: string) => void,
+  onOpenDocumentLink?: (href: string) => void,
   initialHeadingCounts: Record<string, number> = {},
   eagerMermaid = false,
 ): Components {
@@ -181,16 +186,24 @@ function createMarkdownComponents(
       return <code className={className} {...props}>{children}</code>
     },
     a({ children, href }) {
-      const external = Boolean(href && /^https?:\/\//i.test(href))
+      const linkKind = classifyMarkdownLink(href)
+      const external = linkKind === 'external'
+      const documentLink = linkKind === 'document'
       return (
         <a
           href={href}
-          target="_blank"
-          rel="noreferrer"
-          onClick={external && onOpenExternalLink ? (event) => {
-            event.preventDefault()
-            onOpenExternalLink(href ?? '')
-          } : undefined}
+          {...(external ? { target: '_blank', rel: 'noreferrer' } : {})}
+          onClick={(event) => {
+            if (external && onOpenExternalLink) {
+              event.preventDefault()
+              onOpenExternalLink(href ?? '')
+              return
+            }
+            if (documentLink && onOpenDocumentLink) {
+              event.preventDefault()
+              onOpenDocumentLink(href ?? '')
+            }
+          }}
         >
           {children}
         </a>
@@ -218,6 +231,7 @@ const ProgressiveBlock = memo(function ProgressiveBlock({
   resources,
   themeMode,
   onOpenExternalLink,
+  onOpenDocumentLink,
   onRenderChange,
 }: {
   block: RenderBlock
@@ -228,6 +242,7 @@ const ProgressiveBlock = memo(function ProgressiveBlock({
   resources?: Record<string, string>
   themeMode: ThemeMode
   onOpenExternalLink?: (url: string) => void
+  onOpenDocumentLink?: (href: string) => void
   onRenderChange?: () => void
 }) {
   const hostRef = useRef<HTMLDivElement>(null)
@@ -235,8 +250,8 @@ const ProgressiveBlock = memo(function ProgressiveBlock({
   const [height, setHeight] = useState(block.estimatedHeight)
   const keepAliveAfterMount = /```\s*mermaid\b/i.test(block.source)
   const components = useMemo(
-    () => createMarkdownComponents(documentPath, resources, themeMode, onOpenExternalLink, block.headingCountsBefore, eagerMermaid),
-    [block.headingCountsBefore, documentPath, eagerMermaid, onOpenExternalLink, resources, themeMode],
+    () => createMarkdownComponents(documentPath, resources, themeMode, onOpenExternalLink, onOpenDocumentLink, block.headingCountsBefore, eagerMermaid),
+    [block.headingCountsBefore, documentPath, eagerMermaid, onOpenDocumentLink, onOpenExternalLink, resources, themeMode],
   )
 
   useEffect(() => {
@@ -303,6 +318,7 @@ const ProgressiveBlock = memo(function ProgressiveBlock({
   && previous.resources === next.resources
   && previous.themeMode === next.themeMode
   && previous.onOpenExternalLink === next.onOpenExternalLink
+  && previous.onOpenDocumentLink === next.onOpenDocumentLink
   && previous.onRenderChange === next.onRenderChange)
 
 function ScrollableTableWrap({ children }: { children: React.ReactNode }) {

@@ -1,7 +1,48 @@
 // @vitest-environment jsdom
 
 import { describe, expect, it } from 'vitest'
-import { buildSafeHtmlDocument } from './html-processing'
+import {
+  buildSafeHtmlDocument,
+  classifyMarkdownLink,
+  isSameDocumentPath,
+  resolveDesktopDocumentPath,
+  resolveDocumentLinkHref,
+} from './html-processing'
+
+describe('markdown document links', () => {
+  it('classifies external, fragment, and document links', () => {
+    expect(classifyMarkdownLink('https://example.com')).toBe('external')
+    expect(classifyMarkdownLink('#chapter-2')).toBe('fragment')
+    expect(classifyMarkdownLink('./guide.md')).toBe('document')
+    expect(classifyMarkdownLink('javascript:alert(1)')).toBe('other')
+  })
+
+  it('resolves relative markdown paths with anchors', () => {
+    expect(resolveDocumentLinkHref('../readme.md#intro', 'docs/chapter.md', true)).toEqual({
+      path: 'readme.md',
+      hash: 'intro',
+    })
+    expect(resolveDocumentLinkHref('%E4%BD%BF%E7%94%A8%E8%AF%B4%E6%98%8E.md', '使用说明.md', false)).toEqual({
+      path: '使用说明.md',
+      hash: '',
+    })
+  })
+
+  it('rejects package links that escape the archive root', () => {
+    expect(resolveDocumentLinkHref('../../secret.md', 'docs/chapter.md', true)).toBeNull()
+  })
+
+  it('resolves desktop absolute paths from source files', () => {
+    expect(resolveDesktopDocumentPath('C:\\Docs\\Guide\\readme.md', '../other.md')).toEqual({
+      path: 'C:\\Docs\\other.md',
+      hash: '',
+    })
+  })
+
+  it('compares document paths case-insensitively', () => {
+    expect(isSameDocumentPath('Docs/Guide.md', 'docs/guide.md')).toBe(true)
+  })
+})
 
 describe('buildSafeHtmlDocument', () => {
   it('keeps same-document fragment links inside the srcdoc document', () => {

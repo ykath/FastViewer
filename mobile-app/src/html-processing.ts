@@ -1,3 +1,12 @@
+const VIEWABLE_DOCUMENT_EXTENSION_PATTERN = /\.(md|markdown|mdown|html?|xhtml)$/i
+
+export type MarkdownLinkKind = 'external' | 'fragment' | 'document' | 'other'
+
+export type ResolvedDocumentLink = {
+  path: string
+  hash: string
+}
+
 export type HeadingItem = { id: string; level: number; text: string }
 
 export type ExternalResource = { tag: string; attr: string; url: string }
@@ -7,6 +16,59 @@ export type HtmlRenderInfo = {
   headings: HeadingItem[]
   plainText: string
   externalResources: ExternalResource[]
+}
+
+export function classifyMarkdownLink(href: string | undefined): MarkdownLinkKind {
+  const trimmed = href?.trim() ?? ''
+  if (!trimmed) return 'other'
+  if (/^https?:\/\//i.test(trimmed)) return 'external'
+  const { pathPart } = splitMarkdownLinkHref(trimmed)
+  if (pathPart === '' && trimmed.includes('#')) return 'fragment'
+  if (/^(javascript|mailto|tel|data):/i.test(pathPart.trim())) return 'other'
+  if (hasViewableDocumentExtension(pathPart)) return 'document'
+  return 'other'
+}
+
+export function resolveDocumentLinkHref(
+  href: string,
+  currentFilePath: string,
+  confineToPackageRoot: boolean,
+): ResolvedDocumentLink | null {
+  const trimmed = href.trim()
+  if (!trimmed || /^https?:\/\//i.test(trimmed)) return null
+
+  const { pathPart, hash } = splitMarkdownLinkHref(trimmed)
+  if (pathPart === '') return null
+  if (/^(javascript|mailto|tel|data):/i.test(pathPart.trim())) return null
+
+  let decoded = pathPart
+  try { decoded = decodeURIComponent(pathPart) } catch { /* 保留原路径。 */ }
+  decoded = decoded.replace(/\\/g, '/')
+
+  if (!hasViewableDocumentExtension(decoded)) return null
+
+  if (/^[a-zA-Z]:/.test(decoded) || decoded.startsWith('/')) {
+    return { path: decoded, hash: decodeHash(hash) }
+  }
+
+  const baseDir = dirname(currentFilePath.replace(/\\/g, '/'))
+  const normalized = normalizeJoinedDocumentPath(baseDir, decoded, confineToPackageRoot)
+  if (!normalized) return null
+  return { path: normalized, hash: decodeHash(hash) }
+}
+
+export function resolveDesktopDocumentPath(sourceUri: string, href: string): ResolvedDocumentLink | null {
+  const resolved = resolveDocumentLinkHref(href, sourceUri.replace(/\\/g, '/'), false)
+  if (!resolved) return null
+  const useBackslash = /\\/.test(sourceUri)
+  return {
+    path: useBackslash ? resolved.path.replace(/\//g, '\\') : resolved.path,
+    hash: resolved.hash,
+  }
+}
+
+export function isSameDocumentPath(left: string, right: string) {
+  return left.replace(/\\/g, '/').toLocaleLowerCase() === right.replace(/\\/g, '/').toLocaleLowerCase()
 }
 
 export function rewriteRelativeResources(
@@ -178,6 +240,39 @@ function extractHtmlHeadings(root: Document): HeadingItem[] {
     element.id = element.id || id
     return { id: element.id, level: Number(element.tagName.slice(1)), text }
   })
+}
+
+function splitMarkdownLinkHref(href: string) {
+  const hashIndex = href.indexOf('#')
+  const pathAndQuery = hashIndex >= 0 ? href.slice(0, hashIndex) : href
+  const hash = hashIndex >= 0 ? href.slice(hashIndex + 1) : ''
+  const pathPart = pathAndQuery.split('?')[0]
+  return { pathPart, hash }
+}
+
+function decodeHash(hash: string) {
+  if (!hash) return ''
+  try { return decodeURIComponent(hash) } catch { return hash }
+}
+
+function hasViewableDocumentExtension(path: string) {
+  const fileName = path.replace(/\\/g, '/').split('/').pop() ?? path
+  return VIEWABLE_DOCUMENT_EXTENSION_PATTERN.test(fileName)
+}
+
+function normalizeJoinedDocumentPath(baseDir: string, relativePath: string, confineToPackageRoot: boolean) {
+  const parts = `${baseDir}/${relativePath}`.replace(/\\/g, '/').split('/')
+  const normalized: string[] = []
+  for (const part of parts) {
+    if (!part || part === '.') continue
+    if (part === '..') {
+      if (confineToPackageRoot && normalized.length === 0) return null
+      normalized.pop()
+      continue
+    }
+    normalized.push(part)
+  }
+  return normalized.join('/')
 }
 
 function normalizeResourcePath(documentDir: string, resourcePath: string) {
