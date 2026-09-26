@@ -170,10 +170,7 @@ export function extractMarkdownHeadings(markdown: string): HeadingItem[] {
     if (!match) continue
 
     const text = match[2].trim()
-    const baseId = slugify(text)
-    const count = used.get(baseId) ?? 0
-    used.set(baseId, count + 1)
-    headings.push({ id: count ? `${baseId}-${count}` : baseId, level: match[1].length, text })
+    headings.push({ id: allocateMarkdownHeadingId(used, text), level: match[1].length, text })
   }
 
   return headings
@@ -363,6 +360,13 @@ function collectExternalCssUrls(css: string) {
 function stripExternalCssUrls(css: string) {
   return css.replace(/url\(\s*['"]?(?:https?:)?\/\/[^'")\s;]+['"]?\s*\)/gi, 'none')
     .replace(/@import\s+['"](?:https?:)?\/\/[^'"]+['"]\s*;?/gi, '')
+}
+
+export function allocateMarkdownHeadingId(used: Map<string, number>, text: string) {
+  const baseId = slugify(text)
+  const count = used.get(baseId) ?? 0
+  used.set(baseId, count + 1)
+  return count ? `${baseId}-${count}` : baseId
 }
 
 function slugify(text: string) {

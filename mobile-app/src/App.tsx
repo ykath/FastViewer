@@ -2186,7 +2186,7 @@ function ReaderPage({
       anchor: createBookmarkAnchor(
         contentRef.current,
         contentRevision,
-        activeHeadingId || undefined,
+        activeHeadingId || findActiveHeading(document.fileType, headings, iframeRef.current) || undefined,
         contentRef.current.classList.contains('progressive-markdown') ? renderPlainText : undefined,
       ),
       color: 'yellow',
@@ -2223,12 +2223,20 @@ function ReaderPage({
       onShowToast('原文已变化，请重新关联此批注', 'warning')
       return
     }
-    if (item.kind === 'bookmark' && item.anchor.headingId) {
-      window.document.getElementById(item.anchor.headingId)?.scrollIntoView({ block: 'start' })
-    } else {
+    setAnnotationsOpen(false)
+    const scrollToItem = () => {
+      if (item.kind === 'bookmark' && item.anchor.headingId) {
+        const target = window.document.getElementById(item.anchor.headingId)
+        const scroller = scrollRef.current
+        if (!target || !scroller) return
+        const top = target.getBoundingClientRect().top - scroller.getBoundingClientRect().top + scroller.scrollTop
+        scroller.scrollTo({ top, behavior: 'auto' })
+        return
+      }
       contentRef.current?.querySelector<HTMLElement>(`mark[data-annotation-id="${CSS.escape(item.id)}"]`)?.scrollIntoView({ block: 'center' })
     }
-    setAnnotationsOpen(false)
+    window.setTimeout(scrollToItem, 0)
+    window.setTimeout(scrollToItem, 250)
   }
 
   const exportAnnotations = async () => {
@@ -3207,24 +3215,28 @@ function ReaderPage({
   const jumpToHeading = (heading: HeadingItem, closeMobileDirectory: boolean) => {
     setActiveHeadingId(heading.id)
     onUpdate({ lastReadHeadingId: heading.id })
-    try {
-      const scroll = () => {
+    const scroll = () => {
+      try {
         if (document.fileType === 'html') {
           if (allowScripts) {
             iframeRef.current?.contentWindow?.postMessage({ type: 'lightpage-scroll-to-heading', id: heading.id }, '*')
           } else {
             iframeRef.current?.contentDocument?.getElementById(heading.id)?.scrollIntoView({ block: 'start' })
           }
-        } else {
-          contentRef.current?.querySelector<HTMLElement>(`#${CSS.escape(heading.id)}`)?.scrollIntoView({ block: 'start' })
+          return
         }
+        const target = window.document.getElementById(heading.id)
+        const scroller = scrollRef.current
+        if (!target || !scroller) return
+        const top = target.getBoundingClientRect().top - scroller.getBoundingClientRect().top + scroller.scrollTop
+        scroller.scrollTo({ top, behavior: 'auto' })
+      } catch {
+        onShowToast('暂时无法定位到该章节', 'warning')
       }
-      scroll()
-      window.setTimeout(scroll, 60)
-    } catch {
-      onShowToast('暂时无法定位到该章节', 'warning')
     }
     if (closeMobileDirectory) setTocOpen(false)
+    scroll()
+    window.setTimeout(scroll, 60)
   }
 
   const renderTableOfContents = (closeMobileDirectory: boolean) => (
@@ -3255,6 +3267,7 @@ function ReaderPage({
                 key={heading.id}
                 className={`toc-item level-${heading.level}${activeHeadingId === heading.id ? ' active' : ''}`}
                 type="button"
+                data-heading-id={heading.id}
                 onClick={handleHeadingClick}
               >
                 {heading.text}
@@ -3795,7 +3808,7 @@ function ReaderPage({
             <div className="annotation-list">
               {[...annotations].sort((left, right) => left.anchor.start - right.anchor.start).map((item) => (
                 <article className={`annotation-item${item.status === 'orphaned' ? ' orphaned' : ''}`} key={item.id}>
-                  <button type="button" className="annotation-main" onClick={() => jumpToAnnotation(item)}>
+                  <button type="button" className="annotation-main" data-heading-id={item.anchor.headingId} onClick={() => jumpToAnnotation(item)}>
                     <strong>{item.kind === 'bookmark' ? '书签' : item.kind === 'note' ? '批注' : '高亮'}{item.status === 'orphaned' ? ' · 待重新关联' : ''}</strong>
                     <span>{item.anchor.exact || item.anchor.headingId || '当前位置'}</span>
                     {item.note && <small>{item.note}</small>}

@@ -21,7 +21,7 @@ import { isVideoPath, normalizeMarkdownVideoHtml, parseMarkdownVideoPayload } fr
 import type { ThemeMode } from './reader-settings'
 import { buildRenderPlan, createRenderPlan, reconcileRenderPlans } from './render-plan'
 import type { RenderBlock, RenderPlan } from './render-plan'
-import { classifyMarkdownLink } from './html-processing'
+import { allocateMarkdownHeadingId, classifyMarkdownLink } from './html-processing'
 import { contentRenderRevision } from './render-revision'
 
 type MarkdownReaderProps = {
@@ -41,6 +41,11 @@ type MarkdownReaderProps = {
 
 const PROGRESSIVE_THRESHOLD = 1024 * 1024
 const remarkPlugins: PluggableList = [remarkGfm, [remarkMath, { singleDollarTextMath: true }], remarkDisplayMath, remarkReferenceBreaks, remarkVideo]
+const rehypeHeadingIds = (initialCounts: Record<string, number> = {}) => () => (tree: HastNode) => {
+  const used = new Map<string, number>(Object.entries(initialCounts))
+  walkHeadingIds(tree, used)
+}
+
 const remarkRehypeOptions = {
   handlers: {
     ...defaultHandlers,
@@ -141,7 +146,7 @@ function MarkdownReader({ content, documentPath, resources, contentRef, themeMod
       <ReactMarkdown
         remarkPlugins={[...remarkPlugins]}
         remarkRehypeOptions={remarkRehypeOptions}
-        rehypePlugins={[rehypeCodeHighlight, [rehypeKatex, { throwOnError: false, trust: false }]]}
+        rehypePlugins={[rehypeCodeHighlight, [rehypeKatex, { throwOnError: false, trust: false }], rehypeHeadingIds()]}
         components={components}
         urlTransform={markdownUrlTransform}
       >
@@ -184,14 +189,12 @@ function createMarkdownComponents(
 
   const heading = (level: 1 | 2 | 3 | 4 | 5 | 6) => {
     const tagName = `h${level}`
-    return function Heading({ children, ...props }: React.HTMLAttributes<HTMLHeadingElement>) {
-      const text = childrenToText(children)
-      const baseId = slugify(text)
-      const used = headingCountsRef.current
-      const count = used.get(baseId) ?? 0
-      used.set(baseId, count + 1)
-      const id = count ? `${baseId}-${count}` : baseId
-      return createElement(tagName, { id, ...props }, children)
+    return function Heading({ children, node, ...props }: React.HTMLAttributes<HTMLHeadingElement> & ExtraProps) {
+      const pluginId = node?.properties?.id
+      const id = typeof pluginId === 'string'
+        ? pluginId
+        : allocateMarkdownHeadingId(headingCountsRef.current, childrenToText(children))
+      return createElement(tagName, { ...props, id }, children)
     }
   }
 
@@ -364,7 +367,7 @@ const ProgressiveBlock = memo(function ProgressiveBlock({
         <ReactMarkdown
           remarkPlugins={[...remarkPlugins]}
           remarkRehypeOptions={remarkRehypeOptions}
-          rehypePlugins={[rehypeCodeHighlight, [rehypeKatex, { throwOnError: false, trust: false }]]}
+          rehypePlugins={[rehypeCodeHighlight, [rehypeKatex, { throwOnError: false, trust: false }], rehypeHeadingIds(block.headingCountsBefore)]}
           components={components}
           urlTransform={markdownUrlTransform}
         >
@@ -452,8 +455,24 @@ function dirname(path: string) {
   return index >= 0 ? normalized.slice(0, index) : ''
 }
 
-function slugify(text: string) {
-  return text.toLowerCase().replace(/[`*_~()[\]{}:;'"，。！？、]/g, '').trim().replace(/\s+/g, '-').replace(/^-+|-+$/g, '') || 'heading'
+type HastNode = {
+  type?: string
+  tagName?: string
+  value?: string
+  children?: HastNode[]
+  properties?: Record<string, unknown>
+}
+
+function walkHeadingIds(node: HastNode, used: Map<string, number>) {
+  if (node.type === 'element' && node.tagName && /^h[1-6]$/.test(node.tagName)) {
+    node.properties = { ...node.properties, id: allocateMarkdownHeadingId(used, hastText(node)) }
+  }
+  node.children?.forEach((child) => walkHeadingIds(child, used))
+}
+
+function hastText(node: HastNode): string {
+  if (node.type === 'text') return node.value ?? ''
+  return (node.children ?? []).map(hastText).join('')
 }
 
 function childrenToText(children: React.ReactNode): string {
