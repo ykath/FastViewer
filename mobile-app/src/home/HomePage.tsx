@@ -3,7 +3,10 @@ import { collapsePackageDocuments, formatBytes, formatTime } from '../app/record
 import { EmptyState } from '../ui/chrome'
 import { Copy, FileCode2, FileText, FolderOpen, Search, ShieldCheck, Star, X } from 'lucide-react'
 import { useEffect, useMemo, useState } from 'react'
+import type { ReactNode } from 'react'
 import type { DocumentRecord } from '../document-types'
+import type { HomeSearchResult } from '../search/library-search'
+import type { WorkspaceSearchHit } from '../domain-models'
 import { displayDirectoryFromDocumentPath } from '../desktop-directories'
 import '../App.css'
 export type HomePageProps = {
@@ -17,6 +20,8 @@ export type HomePageProps = {
   onRevealFile?: (doc: DocumentRecord) => void
   onClearTab: (tab: HomeTab) => void
   onToggleFavorite: (doc: DocumentRecord) => void
+  onFullTextSearch?: (query: string) => Promise<HomeSearchResult>
+  onOpenSearchResult?: (hit: { kind: 'library'; documentId: string } | { kind: 'pinned'; hit: WorkspaceSearchHit }, query: string) => void
 }
 
 export function HomePage({
@@ -30,11 +35,14 @@ export function HomePage({
   onRevealFile,
   onClearTab,
   onToggleFavorite,
+  onFullTextSearch,
+  onOpenSearchResult,
 }: HomePageProps) {
   const [query, setQuery] = useState('')
   const [debouncedLibraryQuery, setDebouncedLibraryQuery] = useState('')
   const [sortMode, setSortMode] = useState<FileSortMode>('recent')
   const [visibleCount, setVisibleCount] = useState(50)
+  const [searchHits, setSearchHits] = useState<HomeSearchResult | null>(null)
   const files = useMemo(() => {
     const normalizedQuery = debouncedLibraryQuery.trim().toLocaleLowerCase()
     const collapsed = collapsePackageDocuments(documents)
@@ -64,6 +72,30 @@ export function HomePage({
     const timer = window.setTimeout(() => setDebouncedLibraryQuery(query), 180)
     return () => window.clearTimeout(timer)
   }, [query])
+
+  useEffect(() => {
+    const normalized = debouncedLibraryQuery.trim()
+    if (!onFullTextSearch || !normalized) {
+      setSearchHits(null)
+      return undefined
+    }
+    let cancelled = false
+    const run = () => {
+      void onFullTextSearch(normalized).then((result) => {
+        if (!cancelled) setSearchHits(result)
+      }).catch(() => {
+        if (!cancelled) setSearchHits({ library: [], pinned: [] })
+      })
+    }
+    run()
+    const retry = window.setTimeout(run, 600)
+    return () => {
+      cancelled = true
+      window.clearTimeout(retry)
+    }
+  }, [debouncedLibraryQuery, onFullTextSearch])
+
+  const showingSearch = Boolean(debouncedLibraryQuery.trim() && onFullTextSearch)
 
   const clearLabel = activeTab === 'favorite' ? '清空收藏' : activeTab === 'library' ? '移出文件库' : '清理未收藏记录'
 
@@ -142,7 +174,7 @@ export function HomePage({
       </section>
 
       <div className="library-summary">
-        <span>{files.length} 个结果 · 本地内容约 {formatBytes(storageSize)}</span>
+        <span>{showingSearch ? (searchHits?.library.length ?? 0) + (searchHits?.pinned.length ?? 0) : files.length} 个结果 · 本地内容约 {formatBytes(storageSize)}</span>
         {documents.length > 0 && (
           <button
             type="button"
@@ -155,6 +187,42 @@ export function HomePage({
         )}
       </div>
 
+      {showingSearch ? (
+        <section className="file-list" aria-label="全文搜索结果">
+          {!searchHits ? <p className="search-empty">正在搜索</p> : (
+            <>
+              <SearchGroup title="文件库">
+                {searchHits.library.length === 0 ? <p className="search-empty">文件库中没有匹配</p> : searchHits.library.map((hit) => (
+                  <button
+                    className="search-hit"
+                    key={hit.documentId}
+                    type="button"
+                    onClick={() => onOpenSearchResult?.({ kind: 'library', documentId: hit.documentId }, debouncedLibraryQuery)}
+                  >
+                    <strong>{hit.fileName}</strong>
+                    <span>{hit.heading} · {hit.hitCount} 处</span>
+                    <em>{hit.snippet}</em>
+                  </button>
+                ))}
+              </SearchGroup>
+              <SearchGroup title="固定目录">
+                {searchHits.pinned.length === 0 ? <p className="search-empty">固定目录中没有匹配</p> : searchHits.pinned.map((hit) => (
+                  <button
+                    className="search-hit"
+                    key={`${hit.workspaceId}:${hit.relativePath}:${hit.line}`}
+                    type="button"
+                    onClick={() => onOpenSearchResult?.({ kind: 'pinned', hit }, debouncedLibraryQuery)}
+                  >
+                    <strong>{hit.fileName}</strong>
+                    <span>{hit.title || hit.relativePath} · 第 {hit.line} 行</span>
+                    <em>{hit.snippet}</em>
+                  </button>
+                ))}
+              </SearchGroup>
+            </>
+          )}
+        </section>
+      ) : (
       <section className="file-list" aria-label="文件列表">
         {files.length === 0 ? (
           <EmptyState tab={activeTab} />
@@ -224,6 +292,16 @@ export function HomePage({
           </button>
         )}
       </section>
+      )}
     </section>
+  )
+}
+
+function SearchGroup({ title, children }: { title: string; children: ReactNode }) {
+  return (
+    <div className="search-group">
+      <h2>{title}</h2>
+      {children}
+    </div>
   )
 }

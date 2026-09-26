@@ -60,6 +60,7 @@ export type ReaderPageProps = {
   onToggleDirectoryPin: () => void
   onOpenDirectoryDocument: (path: string) => void
   onDirectorySortModeChange: (mode: DirectorySortMode) => void
+  pendingSearchQuery?: string | null
 }
 
 export function ReaderPage({
@@ -84,6 +85,7 @@ export function ReaderPage({
   onToggleDirectoryPin,
   onOpenDirectoryDocument,
   onDirectorySortModeChange,
+  pendingSearchQuery,
 }: ReaderPageProps) {
   const isDesktop = desktopPlatform.isDesktop()
   const [tocOpen, setTocOpen] = useState(false)
@@ -466,6 +468,13 @@ export function ReaderPage({
     }, 0)
     if (pendingHeadingId) onConsumeLinkNavigationHeading()
   }, [document.fileSize, document.fileType, document.id, document.lastReadHeadingId, document.lastReadPosition, document.lastReadProgress, linkNavigationHeadingId, onConsumeLinkNavigationHeading, setDebouncedQuery, setQuery, setSearchIndex, setSearchOpen])
+
+  useEffect(() => {
+    if (!pendingSearchQuery) return
+    setSearchOpen(true)
+    setQuery(pendingSearchQuery)
+    setSearchIndex(0)
+  }, [document.id, pendingSearchQuery, setQuery, setSearchIndex, setSearchOpen])
 
 
   const flushReadPosition = useCallback(() => {

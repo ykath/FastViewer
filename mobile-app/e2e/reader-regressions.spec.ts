@@ -137,6 +137,17 @@ test('章节书签可以创建并跳转', async ({ page }) => {
   await expect(page.locator('[id="开头"]')).toBeInViewport()
 })
 
+test('首页全文搜索能打开文档并定位命中', async ({ page }) => {
+  await openMarkdown(page, '检索样本.md', '# 检索标题\n\n这里有检索口令甲。\n')
+  await page.getByRole('button', { name: '返回' }).click()
+  await expect(page.getByRole('heading', { name: '轻页' })).toBeVisible()
+  await page.getByLabel('搜索文件名或正文').fill('检索口令甲')
+  const hit = page.locator('.search-hit', { hasText: '检索样本.md' })
+  await expect(hit).toBeVisible()
+  await hit.click()
+  await expect(page.getByPlaceholder('搜索当前文档')).toHaveValue('检索口令甲')
+})
+
 test('RAR 文件提示转换为 ZIP', async ({ page }) => {
   await page.locator('input[type=file]').setInputFiles({
     name: 'notes.rar',

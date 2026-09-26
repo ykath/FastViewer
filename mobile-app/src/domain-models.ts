@@ -143,7 +143,7 @@ export type DesktopSessionLayout = {
 
 export type BackgroundTask = {
   id: string
-  type: 'image-export' | 'pdf-export' | 'workspace-index' | 'mermaid'
+  type: 'image-export' | 'pdf-export' | 'workspace-index' | 'library-index' | 'mermaid'
   status: 'queued' | 'running' | 'cancelled' | 'complete' | 'failed'
   progress: number
   message?: string

@@ -10,6 +10,9 @@ import type { ThemeMode } from './reader-settings'
 import { desktopDocumentId, desktopPlatform } from './desktop-platform'
 import type { DesktopDirectoryListing, DesktopOpenRequest } from './desktop-platform'
 import { isDirectoryPinned, loadPinnedDirectories, normalizeDirectoryPath, pinDirectory, savePinnedDirectories, unpinDirectory } from './desktop-directories'
+import { ensureLibraryIndex, setLibraryIndexEnabled } from './search/library-index'
+import { searchLibrary } from './search/library-search'
+import type { WorkspaceSearchHit } from './domain-models'
 import type { DirectorySortMode, PinnedDirectory } from './desktop-directories'
 import { matchCommandShortcut } from './desktop-commands'
 import type { DesktopCommand } from './desktop-commands'
@@ -76,6 +79,8 @@ function App() {
   const [commandQuery, setCommandQuery] = useState('')
   const [readerBackStack, setReaderBackStack] = useState<string[]>([])
   const [linkNavigationHeadingId, setLinkNavigationHeadingId] = useState<string | null>(null)
+  const [pendingSearchQuery, setPendingSearchQuery] = useState<string | null>(null)
+  const [searchIndexBytes, setSearchIndexBytes] = useState(0)
   const fileInputRef = useRef<HTMLInputElement>(null)
   const archiveCleanupStartedRef = useRef(false)
   const openQueueRunningRef = useRef(false)
@@ -126,7 +131,15 @@ function App() {
     if (!documentsHydrated || !isDesktop) return undefined
     let disposed = false
     void loadPinnedDirectories(documentRepository).then((items) => {
-      if (!disposed) setPinnedDirectories(items)
+      if (disposed) return
+      setPinnedDirectories(items)
+      if (items.length === 0) return
+      void desktopPlatform.restoreWorkspaces(items.map((item) => ({
+        id: item.id,
+        name: item.name,
+        rootPath: item.path,
+        exclusions: [],
+      }))).then((records) => Promise.all(records.map((record) => desktopPlatform.startWorkspaceIndex(record.id)))).catch(() => undefined)
     })
     return () => { disposed = true }
   }, [documentRepository, documentsHydrated, isDesktop])
@@ -302,6 +315,9 @@ function App() {
   }
 
   const importDocument = (doc: DocumentRecord, openAfterImport = true) => {
+    if (doc.content && settings.librarySearchEnabled !== false) {
+      void documentRepository.saveSearchText(doc.id, `${doc.fileName}\n${doc.content}`).catch(() => undefined)
+    }
     persistDocuments((items) => upsertDocument(items, doc))
     if (openAfterImport) {
       setActiveDocumentId(doc.id)
@@ -916,8 +932,46 @@ function App() {
       ? unpinDirectory(pinnedDirectories, currentDirectory.path)
       : pinDirectory(pinnedDirectories, currentDirectory.path, currentDirectory.name)
     persistPinnedDirectoryState(next)
+    if (isDesktop) {
+      const item = (pinned ? pinnedDirectories : next).find((entry) => normalizeDirectoryPath(entry.path) === normalizeDirectoryPath(currentDirectory.path))
+      if (item && pinned) void desktopPlatform.removeWorkspace(item.id).catch(() => undefined)
+      if (item && !pinned) {
+        void desktopPlatform.registerWorkspace({ id: item.id, name: item.name, rootPath: item.path, exclusions: [] })
+          .then((record) => desktopPlatform.startWorkspaceIndex(record.id))
+          .catch(() => showToast('目录索引启动失败', 'warning'))
+      }
+    }
     showToast(pinned ? '已取消目录收藏' : '已固定当前目录', 'success')
   }
+
+  const readDesktopIndexText = async (path: string) => {
+    const bytes = await desktopPlatform.readDocument({
+      path,
+      fileName: path.split(/[\\/]/).pop() ?? 'document.md',
+      size: 0,
+      source: 'picker',
+    })
+    return (await decodeDocumentBytes(bytes)).content
+  }
+
+  const refreshSearchIndexBytes = () => {
+    void documentRepository.searchTextBytes().then(setSearchIndexBytes).catch(() => undefined)
+  }
+
+  useEffect(() => {
+    setLibraryIndexEnabled(settings.librarySearchEnabled !== false)
+  }, [settings.librarySearchEnabled])
+
+  useEffect(() => {
+    if (!documentsHydrated || settings.librarySearchEnabled === false) return undefined
+    let cancelled = false
+    void ensureLibraryIndex(documentRepository, isDesktop ? readDesktopIndexText : undefined)
+      .then(() => { if (!cancelled) refreshSearchIndexBytes() })
+      .catch(() => undefined)
+    return () => { cancelled = true }
+  // 索引读取函数只依赖上面已列出的仓储和平台。
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [documentRepository, documentsHydrated, isDesktop, settings.librarySearchEnabled])
 
   const openDirectoryDocument = async (
     path: string,
@@ -1223,7 +1277,10 @@ function App() {
             activeTab={activeTab}
             documents={documents}
             onTabChange={setActiveTab}
-            onOpenFile={(document) => { void openDocument(document) }}
+            onOpenFile={(document) => {
+              setPendingSearchQuery(null)
+              void openDocument(document)
+            }}
             onPickFile={() => { void openFilePicker() }}
             onPasteOpen={() => { void openPasteDialog() }}
             onDelete={deleteDocument}
@@ -1250,6 +1307,32 @@ function App() {
                 persistDocuments((items) => items.filter((item) => item.isFavorite || item.inLibrary))
               }
               showToast('已完成批量清理', 'success')
+            }}
+            onFullTextSearch={settings.librarySearchEnabled === false ? undefined : async (query) => {
+              const rows = await documentRepository.listSearchText()
+              const library = await searchLibrary(query, rows.map((row) => ({
+                documentId: row.documentId,
+                fileName: row.text.split('\n', 1)[0] || row.documentId,
+                text: row.text,
+              })))
+              let pinned: WorkspaceSearchHit[] = []
+              if (isDesktop && pinnedDirectories.length > 0) {
+                pinned = await desktopPlatform.searchWorkspaces(query, pinnedDirectories.map((item) => item.id)).catch(() => [])
+              }
+              return { library, pinned }
+            }}
+            onOpenSearchResult={(hit, query) => {
+              setPendingSearchQuery(query)
+              if (hit.kind === 'library') {
+                const doc = documents.find((item) => item.id === hit.documentId)
+                if (doc) void openDocument(doc)
+                return
+              }
+              const root = pinnedDirectories.find((item) => item.id === hit.hit.workspaceId)
+              if (!root) return
+              const separator = root.path.includes('\\') ? '\\' : '/'
+              const relative = hit.hit.relativePath.replace(/^[\\/]/, '').replace(/[\\/]/g, separator)
+              void openDirectoryDocument(`${root.path.replace(/[\\/]+$/, '')}${separator}${relative}`)
             }}
             onToggleFavorite={(doc) =>
               {
@@ -1293,6 +1376,7 @@ function App() {
             onOpenDesktopDocument={(path, options) => { void openDirectoryDocument(path, options) }}
             linkNavigationHeadingId={linkNavigationHeadingId}
             onConsumeLinkNavigationHeading={() => setLinkNavigationHeadingId(null)}
+            pendingSearchQuery={pendingSearchQuery}
             annotationRepository={documentRepository}
             directoryListing={currentDirectory}
             directorySortMode={directorySortMode}
@@ -1305,7 +1389,28 @@ function App() {
 
         {view === 'settings' && (
           <Suspense fallback={<LoadingState />}>
-            <SettingsPage settings={settings} resolvedTheme={resolvedTheme} onSetSettings={setSettings} />
+            <SettingsPage
+              settings={settings}
+              resolvedTheme={resolvedTheme}
+              onSetSettings={setSettings}
+              searchIndexBytes={searchIndexBytes}
+              onRebuildSearchIndex={() => {
+                void ensureLibraryIndex(documentRepository, isDesktop ? readDesktopIndexText : undefined, { rebuild: true })
+                  .then(() => {
+                    refreshSearchIndexBytes()
+                    showToast('全文索引已重建', 'success')
+                  })
+                  .catch(() => showToast('全文索引重建失败', 'warning'))
+              }}
+              onClearSearchIndex={() => {
+                void documentRepository.clearSearchText()
+                  .then(() => {
+                    setSearchIndexBytes(0)
+                    showToast('全文索引已清理', 'success')
+                  })
+                  .catch(() => showToast('全文索引清理失败', 'warning'))
+              }}
+            />
           </Suspense>
         )}
 
@@ -1328,6 +1433,7 @@ function App() {
         onBrowseDirectory={(directory) => { void browsePinnedDirectory(directory) }}
         onRemoveDirectory={(directory) => {
           persistPinnedDirectoryState(unpinDirectory(pinnedDirectories, directory.path))
+          if (isDesktop) void desktopPlatform.removeWorkspace(directory.id).catch(() => undefined)
           if (directoryBrowser?.path === directory.path) setDirectoryBrowser(null)
         }}
         onNavigate={(nextView) => {

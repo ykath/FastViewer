@@ -74,9 +74,12 @@ describe('IndexedDB v4 文档仓储', () => {
     })
     expect(await repository.getReaderState('notes')).toMatchObject({ position: 80, progress: 0.5 })
     expect(await repository.listAnnotations('notes')).toHaveLength(1)
+    await repository.saveSearchText('notes', 'notes.md\n正文口令')
+    expect(await repository.searchTextBytes()).toBeGreaterThan(0)
     await repository.deleteDocument('notes')
     expect(await repository.getDocument('notes')).toBeNull()
     expect(await repository.listAnnotations('notes')).toHaveLength(0)
+    expect(await repository.listSearchText()).toHaveLength(0)
   })
 
   it('将旧桌面内容 ID 迁移为稳定路径 ID并保留阅读状态', async () => {

@@ -18,9 +18,10 @@ import type {
   StoredDocumentMetadata,
 } from './domain-models'
 import { desktopDocumentId } from './desktop-identity'
+import { isLibraryIndexEnabled } from './search/library-index'
 
 const DATABASE_NAME = 'lightpage-v3'
-const DATABASE_VERSION = 2
+const DATABASE_VERSION = 3
 const STORE_DOCUMENTS = 'documents'
 const STORE_CONTENT = 'contentBlobs'
 const STORE_READER_STATES = 'readerStates'
@@ -28,10 +29,13 @@ const STORE_ANNOTATIONS = 'annotations'
 const STORE_PACKAGES = 'packages'
 const STORE_PACKAGE_ENTRIES = 'packageEntries'
 const STORE_META = 'meta'
+const STORE_SEARCH = 'searchText'
+const SEARCH_TEXT_LIMIT = 2 * 1024 * 1024
 const MIGRATION_KEY = 'v2-to-v3'
 const V4_MIGRATION_KEY = 'v3-to-v4'
 
 type ContentRow = DocumentPayload & { key: string }
+type SearchTextRow = { documentId: string; text: string; bytes: number }
 type MetaRow = { key: string; value: unknown }
 
 function requestResult<T>(request: IDBRequest<T>) {
@@ -71,6 +75,7 @@ function openDatabase() {
         store.createIndex('packageId', 'packageId')
       }
       if (!database.objectStoreNames.contains(STORE_META)) database.createObjectStore(STORE_META, { keyPath: 'key' })
+      if (!database.objectStoreNames.contains(STORE_SEARCH)) database.createObjectStore(STORE_SEARCH, { keyPath: 'documentId' })
     }
     request.onsuccess = () => resolve(request.result)
     request.onerror = () => reject(request.error ?? new Error('无法打开轻页 v3 数据库'))
@@ -328,6 +333,7 @@ export class IndexedDbDocumentRepository implements DocumentRepository {
     if (metadata?.contentRef.kind === 'indexeddb-blob') await this.delete(STORE_CONTENT, metadata.contentRef.key)
     if (metadata?.contentRef.kind === 'desktop-file') await this.delete(STORE_CONTENT, metadata.id)
     if (metadata?.contentRef.kind === 'android-private-file') await deleteDocumentPayload(id)
+    await this.delete(STORE_SEARCH, id)
   }
 
   getReaderState(documentId: string) {
@@ -373,7 +379,36 @@ export class IndexedDbDocumentRepository implements DocumentRepository {
     for (const entry of entries) await this.put(STORE_PACKAGE_ENTRIES, entry)
   }
 
+  async saveSearchText(documentId: string, text: string) {
+    const capped = text.length > SEARCH_TEXT_LIMIT ? text.slice(0, SEARCH_TEXT_LIMIT) : text
+    await this.put(STORE_SEARCH, { documentId, text: capped, bytes: capped.length } satisfies SearchTextRow)
+  }
+
+  listSearchText() {
+    return this.getAll<SearchTextRow>(STORE_SEARCH)
+  }
+
+  async searchTextBytes() {
+    const rows = await this.listSearchText()
+    return rows.reduce((total, row) => total + row.bytes, 0)
+  }
+
+  async clearSearchText() {
+    const database = await openDatabase()
+    try {
+      const transaction = database.transaction(STORE_SEARCH, 'readwrite')
+      const done = transactionDone(transaction)
+      transaction.objectStore(STORE_SEARCH).clear()
+      await done
+    } finally {
+      database.close()
+    }
+  }
+
   async savePayload(document: DocumentRecord) {
+    if (document.content && isLibraryIndexEnabled()) {
+      await this.saveSearchText(document.id, `${document.fileName}\n${document.content}`)
+    }
     if (Capacitor.isNativePlatform()) {
       if (document.archiveStorageId && document.archiveRelativePath) return contentRefFor(document)
       await writeDocumentPayload(document)

@@ -225,6 +225,41 @@
   width: 100%;
 }
 
+.search-group {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-bottom: 16px;
+}
+
+.search-group h2 {
+  margin: 0;
+  font-size: 13px;
+  color: var(--text-muted);
+}
+
+.search-hit {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  width: 100%;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--surface);
+  color: var(--text);
+  text-align: left;
+  font: inherit;
+}
+
+.search-hit span,
+.search-hit em,
+.search-empty {
+  color: var(--text-muted);
+  font-style: normal;
+  font-size: 12px;
+}
+
 .library-sort {
   padding: 0 10px;
   border: 1px solid var(--border);

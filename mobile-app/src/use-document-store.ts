@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { DocumentRecord } from './document-types'
 import { IndexedDbDocumentRepository } from './document-repository'
+import { isLibraryIndexEnabled } from './search/library-index'
 import { loadLegacyDocumentsReadonly } from './document-storage'
 
 const METADATA_WRITE_DELAY_MS = 600
@@ -88,7 +89,14 @@ export function useDocumentStore(seedDocuments: DocumentRecord[]) {
     const timer = window.setTimeout(() => {
       documents.forEach((document) => {
         if (document.payloadLoaded === false) return
-        if (document.sourceUri && /^[a-zA-Z]:[\\/]/.test(document.sourceUri)) return
+        if (document.sourceUri && /^[a-zA-Z]:[\\/]/.test(document.sourceUri)) {
+          const fingerprint = payloadFingerprint(document)
+          if (savedPayloadRef.current.get(document.id) === fingerprint || !document.content || !isLibraryIndexEnabled()) return
+          void repository.saveSearchText(document.id, `${document.fileName}\n${document.content}`)
+            .then(() => savedPayloadRef.current.set(document.id, fingerprint))
+            .catch(() => undefined)
+          return
+        }
         const fingerprint = payloadFingerprint(document)
         if (savedPayloadRef.current.get(document.id) === fingerprint) return
         void repository.savePayload(document)

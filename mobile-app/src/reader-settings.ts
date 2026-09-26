@@ -17,6 +17,7 @@ export type ReaderSettings = {
   cacheLimitMb: 128 | 256 | 512
   desktopRecentDocuments: boolean
   desktopHtmlOpenWith: boolean
+  librarySearchEnabled?: boolean
 }
 
 export const DEFAULT_READER_SETTINGS: ReaderSettings = {
@@ -34,6 +35,7 @@ export const DEFAULT_READER_SETTINGS: ReaderSettings = {
   cacheLimitMb: 256,
   desktopRecentDocuments: true,
   desktopHtmlOpenWith: false,
+  librarySearchEnabled: true,
 }
 
 export function nextThemePreference(current: ThemePreference): ThemePreference {
