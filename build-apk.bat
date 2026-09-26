@@ -99,9 +99,9 @@ if defined FASTVIEWER_KEYSTORE_PATH if defined FASTVIEWER_KEYSTORE_PASSWORD if d
     set "APK_VARIANT=release"
     set "APK_FILE=app-release.apk"
     set "APK_LABEL=android"
-    echo [5/5] Building signed release APK (gradle assembleRelease)...
+    echo [5/5] Building signed release APK: gradle assembleRelease
 ) else (
-    echo [5/5] Building debug APK (gradle assembleDebug)...
+    echo [5/5] Building debug APK: gradle assembleDebug
     echo       Set FASTVIEWER_KEYSTORE_PATH, FASTVIEWER_KEYSTORE_PASSWORD, FASTVIEWER_KEY_ALIAS and FASTVIEWER_KEY_PASSWORD to build a signed release.
 )
 cd /d "%MOBILE_APP%\android"

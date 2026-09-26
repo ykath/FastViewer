@@ -73,7 +73,7 @@ export default function SettingsPage({ settings, resolvedTheme, onSetSettings, s
         <SettingRow icon={<BookOpen size={19} />} title="使用帮助" description="文件打开、安全权限与导出说明" value="查看" onClick={() => setInfoSheet('help')} />
         <SettingRow icon={<ShieldCheck size={19} />} title="隐私说明" description="文档默认仅在本机处理，不自动上传" value="查看" onClick={() => setInfoSheet('privacy')} />
         <SettingRow icon={<FileCode2 size={19} />} title="性能诊断" description="仅保存在本机的最近耗时记录" value={`${performanceMetrics.length} 条`} onClick={() => setInfoSheet('performance')} />
-        <SettingRow icon={<FileCode2 size={19} />} title="版本" description="Markdown 视频播放版本" value="1.5.3" />
+        <SettingRow icon={<FileCode2 size={19} />} title="版本" description="全文搜索与正式签名版本" value="1.6.0" />
       </section>
       {infoSheet === 'search' && (
         <Sheet title="全文索引" onClose={() => setInfoSheet(null)}>

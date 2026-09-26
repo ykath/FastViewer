@@ -90,6 +90,7 @@ function MarkdownReader({ content, documentPath, resources, contentRef, themeMod
   const externalLinkRef = useRef(onOpenExternalLink)
   const documentLinkRef = useRef(onOpenDocumentLink)
   const headingCountsRef = useRef(new Map<string, number>())
+  /* eslint-disable react-hooks/refs -- 写入最新回调且不重建组件表，避免视频在滚动时被卸载 */
   externalLinkRef.current = onOpenExternalLink
   documentLinkRef.current = onOpenDocumentLink
   headingCountsRef.current = new Map()
@@ -103,6 +104,7 @@ function MarkdownReader({ content, documentPath, resources, contentRef, themeMod
       (href) => documentLinkRef.current?.(href),
       renderAll,
     ),
+  /* eslint-enable react-hooks/refs */
     // Callback identity must not rebuild the component map, or <video> remounts while scrolling.
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [renderContent, documentPath, resources, themeMode, renderAll],
@@ -301,6 +303,7 @@ const ProgressiveBlock = memo(function ProgressiveBlock({
   const externalLinkRef = useRef(onOpenExternalLink)
   const documentLinkRef = useRef(onOpenDocumentLink)
   const headingCountsRef = useRef(new Map<string, number>())
+  /* eslint-disable react-hooks/refs -- 写入最新回调且不重建组件表，避免视频在滚动时被卸载 */
   externalLinkRef.current = onOpenExternalLink
   documentLinkRef.current = onOpenDocumentLink
   headingCountsRef.current = new Map(Object.entries(block.headingCountsBefore))
@@ -317,6 +320,7 @@ const ProgressiveBlock = memo(function ProgressiveBlock({
       (href) => documentLinkRef.current?.(href),
       eagerMermaid,
     ),
+    /* eslint-enable react-hooks/refs */
     [documentPath, eagerMermaid, resources, themeMode],
   )
 

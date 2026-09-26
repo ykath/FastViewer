@@ -5,7 +5,7 @@
 - `npm run lint`
 - `npm run desktop:test`
 - `npm run desktop:build`
-- 确认 `mobile-app/release/windows/LightPage_1.5.2_windows-x64.exe` 与 `LightPage_1.5.2_windows-x64-setup.exe` 均生成。
+- 确认 `mobile-app/release/windows/LightPage_1.6.0_windows-x64.exe` 与 `LightPage_1.6.0_windows-x64-setup.exe` 均生成。
 - 在 Windows 10/11 验证安装、卸载、冷启动双击 Markdown、运行中再次双击、中文/空格文件名、应用内 HTML、搜索、目录、主题、阅读进度和导出。
 - 当前 Windows 构建保持 `npm run desktop:build` 中的 `--no-sign`。以后若要签名，在本机准备已加入 `.gitignore` 的 `mobile-app/src-tauri/tauri.signing.conf.json`，再去掉该参数。发布说明必须提示 SmartScreen；不得提交证书、私钥或密码。
 

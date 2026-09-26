@@ -10,31 +10,31 @@
 
 | 平台 | 当前源码版本 | 最新公开 Release | 说明 |
 | --- | --- | --- | --- |
-| Windows x64 | **1.5.2** | **v1.5.2** | 提供安装版和便携版 |
-| Android | **1.5.2**（`versionCode 8`） | **v1.5.2** | 提供调试证书签名 APK |
+| Windows x64 | **1.6.0** | **v1.6.0** | 提供未签名的安装版和便携版 |
+| Android | **1.6.0**（`versionCode 10`） | **v1.6.0** | 提供正式证书签名 APK |
 
-> `v1.5.2` 同时包含 Windows 与 Android 构建，两个平台共享相同的前端阅读能力。
+> `v1.6.0` 同时包含 Windows 与 Android 构建。从调试证书安装的旧版本升级到正式签名 APK 时，需要先卸载再安装。
 
 ## 下载
 
 请从项目的 [GitHub Releases](https://github.com/ykath/FastViewer/releases) 下载，避免使用来源不明的安装文件。
 
-### Windows 1.5.2
+### Windows 1.6.0
 
 [前往最新 Release](https://github.com/ykath/FastViewer/releases/latest)：
 
-- 安装版：`LightPage_1.5.2_windows-x64-setup.exe`
-- 便携版：`LightPage_1.5.2_windows-x64.exe`
+- 安装版：`LightPage_1.6.0_windows-x64-setup.exe`
+- 便携版：`LightPage_1.6.0_windows-x64.exe`
 
 推荐普通用户使用安装版。便携版依赖目标电脑已安装 Microsoft Edge WebView2 Runtime。
 
-### Android 1.5.2
+### Android 1.6.0
 
 Android 安装包与 Windows 版本一并发布：
 
-- `LightPage_1.5.2_android-debug.apk`
+- `LightPage_1.6.0_android.apk`
 
-> Android APK 使用调试证书签名，Windows 文件尚未进行代码签名。Android 调试签名版本可能无法覆盖其他证书签名的旧版本；Windows SmartScreen 也可能显示安全提示。
+> Android APK 使用正式证书签名。已经安装调试证书版本的设备需要先卸载再安装。Windows 文件尚未进行代码签名，SmartScreen 可能显示安全提示。
 
 ## 核心功能
 
@@ -78,11 +78,12 @@ Android 安装包与 Windows 版本一并发布：
 
 ## 平台差异与已知限制
 
-| 能力 | Android 1.5.2 | Windows 1.5.2 |
+| 能力 | Android 1.6.0 | Windows 1.6.0 |
 | --- | --- | --- |
 | 从其他应用/资源管理器打开 | 支持 Android Intent 与系统分享入口 | 支持文件选择、拖放、文件关联和单实例唤起 |
-| ZIP / RAR 文档包 | 支持 | 暂不支持原生导入 |
-| 批注、书签、批注摘要 | 支持 | 数据底座兼容，当前重点仍是单文件阅读 |
+| ZIP / RAR 文档包 | 支持 ZIP 与 RAR | 支持 ZIP；RAR 会提示先转换为 ZIP |
+| 批注、书签、批注摘要 | 支持 | 支持侧栏批注、三色高亮和摘要导出 |
+| 本地全文搜索 | 支持文件库正文 | 支持文件库正文，并合并固定目录索引 |
 | 分享卡片、系统分享 | 支持 | 以图片、PDF 和原文件导出为主 |
 | 同目录文档切换、固定目录 | 不适用 | 支持 |
 | Mermaid 全屏缩放查看 | 常规自适应显示 | 支持双击全屏查看 |
@@ -94,11 +95,25 @@ Android 安装包与 Windows 版本一并发布：
 - Windows 只枚举和打开受支持的 Markdown / HTML 文档；目录收藏不是完整的文件管理器或在线工作区。
 - Android 的 RAR 解压依赖当前原生库，不支持 RAR5 或加密压缩包；这类文件请转换为 ZIP 或 RAR4。
 - HTML 默认采用最小权限沙箱策略；被拦截的脚本或远程资源需要用户明确授权，不能假定任意网页应用都能完整运行。
-- 当前安装包未正式签名，生产分发前仍需配置 Android 正式签名和 Windows 代码签名。
+- Android 1.6.0 使用正式证书签名；Windows 仍未代码签名。调试证书安装的 Android 版本不能直接覆盖正式包。
 
 ## 版本变化
 
-### v1.5.2（2026-09-11，当前公开版本）
+### v1.6.0（2026-09-26，当前公开版本）
+
+- Windows 阅读栏增加批注页签，高亮可选黄、绿、蓝三色，并用应用内输入替代系统提示框。
+- `Ctrl+B` 添加书签，`Ctrl+Shift+H` 高亮选区，`Ctrl+Shift+B` 打开目录；桌面端可将批注摘要保存为 Markdown。
+- Windows 可以导入 ZIP 文档包；RAR 会提示先转换为 ZIP。
+- 首页支持本机全文搜索。文件库结果来自本地索引，Windows 固定目录结果合并已有的工作区索引，打开后跳到第一处命中。
+- Android 发布包改为正式证书签名，`versionCode` 为 10。从调试签名版本升级需要先卸载。
+- Windows 安装包仍未代码签名。
+
+### v1.5.3（2026-09-20）
+
+- Markdown 阅读视图支持视频播放，Windows 本地视频按需加载，滚动时不重新创建播放器。
+- 修复目录跳转和标题锚点在重绘后漂移的问题。
+
+### v1.5.2（2026-09-11）
 
 - Markdown 阅读视图新增“复制富文本”，可将标题、列表、表格、代码、链接和图片直接粘贴到 Gmail、Word、Foxmail 等软件。
 - 剪贴板同时提供 HTML 和纯文本格式，并清理搜索高亮、批注标记与阅读器控件。

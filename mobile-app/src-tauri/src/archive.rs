@@ -2,11 +2,17 @@ use serde::Serialize;
 use sha2::{Digest, Sha256};
 use std::{
     fs::{self, File},
-    io::{self, Read, Write},
-    path::{Path, PathBuf},
+    io::{Read, Write},
+    path::Path,
     sync::atomic::{AtomicBool, Ordering},
 };
-use zip::{ZipArchive, ZipWriter};
+use zip::ZipArchive;
+#[cfg(test)]
+use std::io;
+#[cfg(test)]
+use std::path::PathBuf;
+#[cfg(test)]
+use zip::ZipWriter;
 use tauri::Manager;
 
 pub const MAX_ARCHIVE_ENTRIES: usize = 1000;
@@ -276,6 +282,7 @@ fn sha256_file(path: &Path) -> Result<String, String> {
     Ok(format!("{:x}", hasher.finalize()))
 }
 
+#[cfg(test)]
 pub fn write_test_zip(path: &Path, files: &[(&str, &[u8])]) -> io::Result<()> {
     let file = File::create(path)?;
     let mut writer = ZipWriter::new(file);
