@@ -7,7 +7,7 @@
 - `npm run desktop:build`
 - 确认 `mobile-app/release/windows/LightPage_1.5.2_windows-x64.exe` 与 `LightPage_1.5.2_windows-x64-setup.exe` 均生成。
 - 在 Windows 10/11 验证安装、卸载、冷启动双击 Markdown、运行中再次双击、中文/空格文件名、应用内 HTML、搜索、目录、主题、阅读进度和导出。
-- 首版产物未签名，发布说明必须提示 SmartScreen；不得提交证书、私钥或密码。
+- 当前 Windows 构建保持 `npm run desktop:build` 中的 `--no-sign`。以后若要签名，在本机准备已加入 `.gitignore` 的 `mobile-app/src-tauri/tauri.signing.conf.json`，再去掉该参数。发布说明必须提示 SmartScreen；不得提交证书、私钥或密码。
 
 ## 自动化 Gate
 
@@ -28,6 +28,13 @@
 - `FASTVIEWER_KEY_PASSWORD`
 
 密钥和密码不得提交到仓库。
+
+本机正式签名材料在 `mobile-app/android/keystore/`（已忽略，不入库）：
+
+- `lightpage-release.keystore`：发布证书，别名 `lightpage`。
+- `keystore.local.bat`：设置上述四个环境变量。`build-apk.bat` 检测到这些变量时执行 `assembleRelease`，产物为 `LightPage_<版本>_android.apk`；未设置时仍构建调试包。
+
+备份要求：证书文件和 `keystore.local.bat` 必须离线备份。丢失后无法用同一证书升级已安装的正式版，只能卸载重装。调试证书安装的版本也不能直接覆盖正式签名包。
 
 ## 真机回归矩阵
 

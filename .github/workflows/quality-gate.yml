@@ -23,6 +23,7 @@ jobs:
           java-version: 21
       - uses: android-actions/setup-android@v3
       - run: npm ci
+      - run: node scripts/check-version.mjs
       - run: npm run lint
       - run: npm run test
       - run: npm run build
@@ -50,6 +51,7 @@ jobs:
         with:
           targets: x86_64-pc-windows-msvc
       - run: npm ci
+      - run: node scripts/check-version.mjs
       - run: npm run lint
       - run: npm run test
       - run: npm run build

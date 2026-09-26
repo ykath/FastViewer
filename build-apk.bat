@@ -21,13 +21,15 @@ if defined GRADLE_USER_HOME (
     set "LIGHTPAGE_GRADLE_HOME=%USERPROFILE%\.gradle"
 )
 
-echo [1/5] Checking toolchain...
+echo [1/5] Checking toolchain and version...
 where node >nul 2>&1 || (echo ERROR: node not found & exit /b 1)
 where npm >nul 2>&1 || (echo ERROR: npm not found & exit /b 1)
 where java >nul 2>&1 || (echo ERROR: java not found, check JAVA_HOME & exit /b 1)
 java -version 2>&1 | findstr /i "version" >nul || (echo ERROR: java version check failed & exit /b 1)
 for /f "usebackq tokens=*" %%I in (`node -e "console.log(require(process.argv[1]).version)" "%MOBILE_APP%\package.json"`) do set "APP_VERSION=%%I"
 if not defined APP_VERSION (echo ERROR: package version could not be read & exit /b 1)
+node "%MOBILE_APP%\scripts\check-version.mjs"
+if %errorlevel% neq 0 (echo ERROR: version check failed & exit /b 1)
 echo       JAVA_HOME = %JAVA_HOME%
 echo       ANDROID_HOME = %ANDROID_HOME%
 echo.
@@ -87,15 +89,29 @@ if exist "%GRADLE_LOCAL_ZIP%" (
 )
 echo.
 
-echo [5/5] Building debug APK (gradle assembleDebug)...
+if exist "%MOBILE_APP%\android\keystore\keystore.local.bat" call "%MOBILE_APP%\android\keystore\keystore.local.bat"
+set "GRADLE_TASK=assembleDebug"
+set "APK_VARIANT=debug"
+set "APK_FILE=app-debug.apk"
+set "APK_LABEL=android-debug"
+if defined FASTVIEWER_KEYSTORE_PATH if defined FASTVIEWER_KEYSTORE_PASSWORD if defined FASTVIEWER_KEY_ALIAS if defined FASTVIEWER_KEY_PASSWORD (
+    set "GRADLE_TASK=assembleRelease"
+    set "APK_VARIANT=release"
+    set "APK_FILE=app-release.apk"
+    set "APK_LABEL=android"
+    echo [5/5] Building signed release APK (gradle assembleRelease)...
+) else (
+    echo [5/5] Building debug APK (gradle assembleDebug)...
+    echo       Set FASTVIEWER_KEYSTORE_PATH, FASTVIEWER_KEYSTORE_PASSWORD, FASTVIEWER_KEY_ALIAS and FASTVIEWER_KEY_PASSWORD to build a signed release.
+)
 cd /d "%MOBILE_APP%\android"
-call gradlew.bat assembleDebug
+call gradlew.bat %GRADLE_TASK%
 if %errorlevel% neq 0 (echo ERROR: gradle build failed & exit /b 1)
 echo.
 
-set "APK_PATH=%MOBILE_APP%\android\app\build\outputs\apk\debug\app-debug.apk"
-set "LIGHTPAGE_APK=%MOBILE_APP%\android\app\build\outputs\apk\debug\LightPage.apk"
-set "RELEASE_APK=%OUTPUT_DIR%\LightPage_%APP_VERSION%_android-debug.apk"
+set "APK_PATH=%MOBILE_APP%\android\app\build\outputs\apk\%APK_VARIANT%\%APK_FILE%"
+set "LIGHTPAGE_APK=%MOBILE_APP%\android\app\build\outputs\apk\%APK_VARIANT%\LightPage.apk"
+set "RELEASE_APK=%OUTPUT_DIR%\LightPage_%APP_VERSION%_%APK_LABEL%.apk"
 if exist "%APK_PATH%" (
     copy /Y "%APK_PATH%" "%LIGHTPAGE_APK%" >nul
     if %errorlevel% neq 0 (echo ERROR: failed to create LightPage.apk & exit /b 1)

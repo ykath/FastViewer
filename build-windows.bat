@@ -41,6 +41,8 @@ call npm ci
 if %errorlevel% neq 0 (echo ERROR: npm ci failed & exit /b 1)
 for /f "usebackq tokens=*" %%I in (`node -p "require('./package.json').version"`) do set "APP_VERSION=%%I"
 if not defined APP_VERSION (echo ERROR: package version could not be read & exit /b 1)
+node scripts\check-version.mjs
+if %errorlevel% neq 0 (echo ERROR: version check failed & exit /b 1)
 echo.
 
 echo [3/5] Running frontend and Rust tests...

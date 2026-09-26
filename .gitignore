@@ -30,6 +30,7 @@ mobile-app/src-tauri/binaries/
 mobile-app/url-importer/
 mobile-app/release/
 mobile-app/src-tauri/tauri.signing.conf.json
+mobile-app/android/keystore/
 
 # IDE / Editor
 .vscode/
