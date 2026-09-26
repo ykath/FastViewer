@@ -9,9 +9,11 @@ use std::{
 use tauri::{Emitter, Manager};
 use tauri_plugin_fs::FsExt;
 
+mod archive;
 mod system_integration;
 mod workspace;
 
+use archive::{cancel_zip_import, import_zip_archive, remove_zip_archive, ArchiveImportState};
 use system_integration::{add_recent_document, get_html_open_with, set_html_open_with};
 use workspace::{
     cancel_workspace_index, get_document_revision, list_workspace_children, prepare_workspace_open,
@@ -19,7 +21,7 @@ use workspace::{
     start_workspace_index, unwatch_document, watch_document, DesktopWorkspaceState,
 };
 
-const SUPPORTED_EXTENSIONS: &[&str] = &["md", "markdown", "mdown", "html", "htm", "xhtml"];
+const SUPPORTED_EXTENSIONS: &[&str] = &["md", "markdown", "mdown", "html", "htm", "xhtml", "zip"];
 const SUPPORTED_IMAGE_EXTENSIONS: &[&str] = &["png", "jpg", "jpeg", "gif", "webp"];
 const SUPPORTED_VIDEO_EXTENSIONS: &[&str] = &["mp4", "webm", "ogg", "ogv", "mov", "m4v"];
 const MAX_RELATIVE_RESOURCES: usize = 64;
@@ -43,6 +45,8 @@ pub struct DesktopDropClassification {
     files: Vec<DesktopOpenRequest>,
     directories: Vec<String>,
     rejected: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    message: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -89,6 +93,9 @@ pub(crate) fn validate_open_path(
         .and_then(|value| value.to_str())
         .map(str::to_ascii_lowercase)
         .ok_or_else(|| "文件缺少受支持的扩展名".to_string())?;
+    if extension == "rar" {
+        return Err("请转换为 ZIP".to_string());
+    }
     if !SUPPORTED_EXTENSIONS.contains(&extension.as_str()) {
         return Err("当前仅支持 Markdown 和 HTML 文件".to_string());
     }
@@ -249,6 +256,7 @@ fn classify_drop_paths(
     let mut files = Vec::new();
     let mut directories = Vec::new();
     let mut rejected = 0usize;
+    let mut message = None;
     for path in paths.into_iter().take(100) {
         let Ok(canonical) = fs::canonicalize(path) else {
             rejected += 1;
@@ -265,6 +273,10 @@ fn classify_drop_paths(
             Ok((approved, request)) if allow_request(&app, &approved).is_ok() => {
                 files.push(request)
             }
+            Err(error) if error == "请转换为 ZIP" => {
+                rejected += 1;
+                message = Some(error);
+            }
             _ => rejected += 1,
         }
     }
@@ -272,6 +284,7 @@ fn classify_drop_paths(
         files,
         directories,
         rejected,
+        message,
     })
 }
 
@@ -369,6 +382,7 @@ pub fn run() {
         .plugin(tauri_plugin_window_state::Builder::default().build())
         .manage(PendingOpenRequests::default())
         .manage(DesktopWorkspaceState::default())
+        .manage(ArchiveImportState::default())
         .setup(|app| {
             let requests = requests_from_args(
                 env::args_os()
@@ -404,7 +418,10 @@ pub fn run() {
             search_workspace,
             set_html_open_with,
             get_html_open_with,
-            add_recent_document
+            add_recent_document,
+            import_zip_archive,
+            cancel_zip_import,
+            remove_zip_archive
         ]);
 
     builder

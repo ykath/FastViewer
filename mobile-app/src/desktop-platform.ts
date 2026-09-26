@@ -28,7 +28,7 @@ export type DesktopOpenRequest = {
 }
 
 export type WorkspaceRegistration = Pick<WorkspaceRecord, 'id' | 'name' | 'rootPath' | 'exclusions'>
-export type DesktopDropClassification = { files: DesktopOpenRequest[]; directories: string[]; rejected: number }
+export type DesktopDropClassification = { files: DesktopOpenRequest[]; directories: string[]; rejected: number; message?: string }
 
 export type DesktopDirectoryDocument = {
   path: string
@@ -116,6 +116,7 @@ export function createDesktopPlatform(dependencies: DesktopPlatformDependencies 
         filters: [
           { name: 'Markdown', extensions: ['md', 'markdown', 'mdown'] },
           { name: 'HTML', extensions: ['html', 'htm', 'xhtml'] },
+          { name: 'ZIP 文档包', extensions: ['zip'] },
         ],
       })
       if (!selected || Array.isArray(selected)) return null
@@ -182,6 +183,21 @@ export function createDesktopPlatform(dependencies: DesktopPlatformDependencies 
     listenForWorkspaceChanges(handler: (workspaceId: string) => void): Promise<UnlistenFn> {
       if (!isDesktop()) return Promise.resolve(() => undefined)
       return dependencies.listen<string>('workspace-files-changed', handler)
+    },
+
+    async removeZipArchive(storageId: string) {
+      if (!isDesktop()) return
+      await dependencies.invoke('remove_zip_archive', { storageId })
+    },
+
+    async importZipArchive(path: string) {
+      if (!isDesktop()) throw new Error('桌面文件接口不可用')
+      return dependencies.invoke<{
+        storageId: string
+        fileName: string
+        size: number
+        documents: Array<{ relativePath: string; fileName: string; size: number; path: string }>
+      }>('import_zip_archive', { path })
     },
 
     async readDocument(request: DesktopOpenRequest) {

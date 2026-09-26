@@ -3,6 +3,7 @@ import type { DocumentMetadata, DocumentType } from './document-types'
 export type ContentRef =
   | { kind: 'android-private-file'; path: string }
   | { kind: 'android-archive-entry'; packageId: string; relativePath: string }
+  | { kind: 'desktop-archive-entry'; storageId: string; relativePath: string; path: string }
   | { kind: 'indexeddb-blob'; key: string }
   | { kind: 'desktop-file'; path: string; fingerprint?: string }
 

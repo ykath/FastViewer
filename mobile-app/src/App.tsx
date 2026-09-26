@@ -210,7 +210,24 @@ function App() {
     if (doc.payloadLoaded === false) {
       setView('loading')
       try {
-        if (isDesktop && doc.sourceUri && /^[a-zA-Z]:[\\/]/.test(doc.sourceUri)) {
+        if (isDesktop && doc.archiveStorageId && doc.extractedPath) {
+          const bytes = await desktopPlatform.readDocument({ path: doc.extractedPath, fileName: doc.fileName, size: doc.fileSize, source: 'picker' })
+          const decoded = await decodeDocumentBytes(bytes)
+          const resources = doc.fileType === 'markdown'
+            ? await desktopPlatform.loadMarkdownResources(doc.extractedPath, decoded.content).catch(() => ({}))
+            : {}
+          openedDocument = {
+            ...doc,
+            fileSize: bytes.length,
+            content: decoded.content,
+            rawBase64: decoded.rawBase64,
+            encoding: decoded.encoding,
+            archiveResources: Object.keys(resources).length ? resources : doc.archiveResources,
+            payloadLoaded: true,
+            contentRevision: stableDocumentId(doc.fileName, decoded.content),
+          }
+          setDocuments((items) => items.map((item) => item.id === doc.id ? openedDocument : item))
+        } else if (isDesktop && doc.sourceUri && /^[a-zA-Z]:[\\/]/.test(doc.sourceUri)) {
           const request = await desktopPlatform.prepareDocument(doc.sourceUri, 'picker')
           const bytes = await desktopPlatform.readDocument(request)
           const decoded = await decodeDocumentBytes(bytes)
@@ -269,6 +286,7 @@ function App() {
     if (
       desktopPlatform.isDesktop()
       && openedDocument.fileType === 'markdown'
+      && !openedDocument.archiveStorageId
       && openedDocument.sourceUri
       && !openedDocument.archiveResources
     ) {
@@ -377,6 +395,36 @@ function App() {
     }
 
     if (openAfterImport) setView('loading')
+    const extension = getExtension(request.fileName)
+    if (extension === 'rar') {
+      showError('UNSUPPORTED_TYPE', '请转换为 ZIP')
+      return
+    }
+    if (extension === 'zip') {
+      try {
+        const imported = await desktopPlatform.importZipArchive(request.path)
+        await importArchiveDocuments({
+          hasFile: true,
+          isArchive: true,
+          fileName: imported.fileName || request.fileName,
+          uri: request.path,
+          originalPath: request.path,
+          sha256: imported.storageId,
+          storageId: imported.storageId,
+          size: imported.size || request.size,
+          documents: imported.documents.map((item) => ({
+            fileName: item.fileName,
+            relativePath: item.relativePath,
+            cachedPath: item.path,
+            size: item.size,
+            sourceUri: request.path,
+          })),
+        })
+      } catch (error) {
+        showError('ARCHIVE_FAILED', error instanceof Error ? error.message : '压缩包内容处理失败，请确认文件未损坏。')
+      }
+      return
+    }
     try {
       const bytes = await desktopPlatform.readDocument(request)
       const sourceType = request.source === 'picker' ? 'Windows 文件选择器' : 'Windows 资源管理器'
@@ -430,12 +478,17 @@ function App() {
       let record: DocumentRecord
       if (index === 0) {
         const bytes = item.cachedPath
-          ? await readNativeStoredFile(item.cachedPath, item.size)
+          ? (isDesktop
+            ? await desktopPlatform.readDocument({ path: item.cachedPath, fileName: item.fileName, size: item.size ?? 0, source: 'picker' })
+            : await readNativeStoredFile(item.cachedPath, item.size))
           : item.base64Content
             ? base64ToBytes(item.base64Content)
             : new Uint8Array()
         if (bytes.length === 0) continue
         const decoded = await decodeDocumentBytes(bytes)
+        const desktopResources = isDesktop && item.cachedPath
+          ? await desktopPlatform.loadMarkdownResources(item.cachedPath, decoded.content).catch(() => ({}))
+          : {}
         record = {
           ...createRecordFromBytes({
             fileName: relativePath,
@@ -448,13 +501,14 @@ function App() {
             inLibrary: true,
             lastOpenedAt: new Date(importedAt - index).toISOString(),
             archiveRelativePath: relativePath,
-            archiveResources,
+            archiveResources: Object.keys(desktopResources).length ? desktopResources : archiveResources,
             archiveStorageId: packageId,
           }),
           id: documentId,
           packageId,
           packageName: result.fileName,
           payloadLoaded: true,
+          extractedPath: isDesktop ? item.cachedPath : undefined,
           contentRevision: stableDocumentId(relativePath, decoded.content),
         }
       } else {
@@ -471,6 +525,7 @@ function App() {
           id: documentId,
           archiveRelativePath: relativePath,
           archiveStorageId: packageId,
+          extractedPath: isDesktop ? item.cachedPath : undefined,
           packageId,
           packageName: result.fileName,
           payloadLoaded: false,
@@ -699,6 +754,10 @@ function App() {
         showError('UNSUPPORTED_TYPE', '当前仅支持 Markdown、HTML、ZIP 和 RAR 文件。')
         return
       }
+      if (getExtension(file.name) === 'rar') {
+        showError('UNSUPPORTED_TYPE', '请转换为 ZIP')
+        return
+      }
       if (isArchiveFileName(file.name)) {
         if (!Capacitor.isNativePlatform()) {
           showError('UNSUPPORTED_TYPE', '压缩包导入需要在 Android App 中使用。')
@@ -777,6 +836,11 @@ function App() {
     )
   }, [activeDocumentId, persistDocuments])
 
+  const releaseStoredArchive = (storageId: string) => {
+    if (isDesktop) void desktopPlatform.removeZipArchive(storageId).catch(() => undefined)
+    else void FastViewerFiles.releaseArchive({ storageId }).catch(() => undefined)
+  }
+
   const deleteDocument = async (doc: DocumentRecord) => {
     if (doc.packageId) {
       const entries = documents.filter((item) => item.packageId === doc.packageId)
@@ -786,7 +850,7 @@ function App() {
       const warning = `确定删除文档包“${doc.packageName ?? doc.fileName}”及其中 ${entries.length} 篇文档、${annotationCount} 条批注吗？${favoriteCount ? `其中 ${favoriteCount} 篇已收藏。` : ''}`
       if (!window.confirm(warning) || (favoriteCount > 0 && !window.confirm('已收藏内容和对应批注也会删除，请再次确认。'))) return
       persistDocuments((items) => items.filter((item) => item.packageId !== doc.packageId))
-      if (doc.archiveStorageId) void FastViewerFiles.releaseArchive({ storageId: doc.archiveStorageId }).catch(() => undefined)
+      if (doc.archiveStorageId) releaseStoredArchive(doc.archiveStorageId)
       void documentRepository.deletePackage(doc.packageId).catch(() => undefined)
       if (entries.some((item) => item.id === activeDocumentId)) {
         const next = documents.find((item) => item.packageId !== doc.packageId)
@@ -801,10 +865,10 @@ function App() {
       setActiveDocumentId(next?.id ?? '')
     }
     if (doc.archiveStorageId && documents.filter((item) => item.archiveStorageId === doc.archiveStorageId).length === 1) {
-      void FastViewerFiles.releaseArchive({ storageId: doc.archiveStorageId }).catch(() => undefined)
+      void releaseStoredArchive(doc.archiveStorageId)
     }
     if (doc.resourceStorageId) {
-      void FastViewerFiles.releaseArchive({ storageId: doc.resourceStorageId }).catch(() => undefined)
+      void releaseStoredArchive(doc.resourceStorageId)
     }
     showToast('已删除本地记录', 'success')
   }
@@ -1043,7 +1107,8 @@ function App() {
         if (classified.files[0]) await importDesktopRequest(classified.files[0])
         if (classified.files.length > 1) showToast(`已打开首个文件，忽略其余 ${classified.files.length - 1} 个文件`, 'warning')
         if (classified.directories.length > 0) showToast('请先打开目录内的文档，再从左侧固定该目录', 'warning')
-        if (classified.rejected) showToast(`${classified.rejected} 个项目不受支持或无法访问`, 'warning')
+        if (classified.message) showToast(classified.message, 'warning')
+        else if (classified.rejected) showToast(`${classified.rejected} 个项目不受支持或无法访问`, 'warning')
       } finally {
         lastDropRef.current.processing = false
       }
@@ -1074,7 +1139,7 @@ function App() {
   }, [activeDocument?.contentRevision, activeDocument?.sourceUri, isDesktop])
 
   useEffect(() => {
-    if (!isDesktop || view !== 'reader' || !activeDocument?.sourceUri) return undefined
+    if (!isDesktop || view !== 'reader' || !activeDocument?.sourceUri || activeDocument.archiveStorageId) return undefined
     const documentId = activeDocument.id
     const documentPath = activeDocument.sourceUri
     const refreshTimers = desktopRefreshTimersRef.current
@@ -1179,7 +1244,7 @@ function App() {
                 const removableStorage = new Set(removable.flatMap((item) => [item.archiveStorageId, item.resourceStorageId].filter(Boolean)))
                 removableStorage.forEach((storageId) => {
                   if (!remainingStorage.has(storageId)) {
-                    void FastViewerFiles.releaseArchive({ storageId: storageId as string }).catch(() => undefined)
+                    void releaseStoredArchive(storageId as string)
                   }
                 })
                 persistDocuments((items) => items.filter((item) => item.isFavorite || item.inLibrary))

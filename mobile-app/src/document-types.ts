@@ -13,6 +13,7 @@ export type DocumentRecord = {
   archiveRelativePath?: string
   archiveResources?: Record<string, string>
   archiveStorageId?: string
+  extractedPath?: string
   resourceStorageId?: string
   encoding: string
   lastOpenedAt: string

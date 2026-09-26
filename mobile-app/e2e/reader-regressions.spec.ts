@@ -136,3 +136,12 @@ test('章节书签可以创建并跳转', async ({ page }) => {
   await bookmark.click()
   await expect(page.locator('[id="开头"]')).toBeInViewport()
 })
+
+test('RAR 文件提示转换为 ZIP', async ({ page }) => {
+  await page.locator('input[type=file]').setInputFiles({
+    name: 'notes.rar',
+    mimeType: 'application/vnd.rar',
+    buffer: Buffer.from('rar'),
+  })
+  await expect(page.getByText('请转换为 ZIP')).toBeVisible()
+})

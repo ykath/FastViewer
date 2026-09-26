@@ -90,8 +90,11 @@ async function withStore<T>(storeName: string, mode: IDBTransactionMode, action:
   }
 }
 
-function contentRefFor(document: Pick<DocumentRecord, 'id' | 'archiveStorageId' | 'archiveRelativePath' | 'sourceUri'>): ContentRef {
+function contentRefFor(document: Pick<DocumentRecord, 'id' | 'archiveStorageId' | 'archiveRelativePath' | 'sourceUri' | 'extractedPath'>): ContentRef {
   if (document.archiveStorageId && document.archiveRelativePath) {
+    if (document.extractedPath) {
+      return { kind: 'desktop-archive-entry', storageId: document.archiveStorageId, relativePath: document.archiveRelativePath, path: document.extractedPath }
+    }
     return { kind: 'android-archive-entry', packageId: document.archiveStorageId, relativePath: document.archiveRelativePath }
   }
   if (Capacitor.isNativePlatform()) {
