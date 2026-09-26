@@ -119,7 +119,7 @@ export function annotationsToMarkdown(fileName: string, annotations: DocumentAnn
   const sorted = [...annotations].sort((left, right) => left.anchor.start - right.anchor.start)
   for (const item of sorted) {
     lines.push(`## ${item.kind === 'bookmark' ? '书签' : item.kind === 'note' ? '批注' : '高亮'}${item.status === 'orphaned' ? '（待重新关联）' : ''}`)
-    if (item.anchor.headingId) lines.push('', `章节：${item.anchor.headingId}`)
+    if (item.kind === 'highlight') lines.push('', `颜色：${{ yellow: '黄色', green: '绿色', blue: '蓝色' }[item.color ?? 'yellow']}`)
     if (item.anchor.exact) lines.push('', `> ${item.anchor.exact.replace(/\n/g, '\n> ')}`)
     if (item.note) lines.push('', item.note)
     lines.push('')
@@ -144,8 +144,10 @@ function applyHighlight(root: HTMLElement, annotation: DocumentAnnotation) {
     const selected = node.splitText(start)
     selected.splitText(end - start)
     const mark = document.createElement('mark')
-    mark.className = 'annotation-highlight'
+    const color = annotation.color ?? 'yellow'
+    mark.className = `annotation-highlight annotation-${color}`
     mark.dataset.annotationId = annotation.id
+    mark.dataset.color = color
     selected.parentNode?.replaceChild(mark, selected)
     mark.appendChild(selected)
   })

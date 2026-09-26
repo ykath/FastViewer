@@ -1,6 +1,6 @@
 import { Capacitor } from '@capacitor/core'
 import { Share } from '@capacitor/share'
-import { useCallback, useEffect, type Dispatch, type RefObject, type SetStateAction } from 'react'
+import { useCallback, useEffect, useRef, useState, type Dispatch, type RefObject, type SetStateAction } from 'react'
 import {
   annotationsToMarkdown,
   applyAnnotationHighlights,
@@ -9,7 +9,8 @@ import {
 } from '../annotations'
 import { clamp } from '../app/records'
 import type { NativeSelectionAction, ReaderMode, ReaderSelectionAction, ToastState } from '../app/types'
-import type { DocumentAnnotation, DocumentRepository } from '../domain-models'
+import type { AnnotationColor, DocumentAnnotation, DocumentRepository } from '../domain-models'
+import { desktopPlatform } from '../desktop-platform'
 import type { DocumentRecord } from '../document-types'
 import type { HeadingItem } from '../html-processing'
 import { findActiveHeading } from './export-capture'
@@ -55,6 +56,19 @@ export function useReaderAnnotations({
   setShareCardText: Dispatch<SetStateAction<string | null>>
   setAnnotationsOpen: Dispatch<SetStateAction<boolean>>
 }) {
+  const noteResolverRef = useRef<((value: string | null) => void) | null>(null)
+  const [noteDraft, setNoteDraft] = useState<{ title: string; value: string } | null>(null)
+  const askNote = useCallback((title: string, initial: string) => new Promise<string | null>((resolve) => {
+    noteResolverRef.current?.(null)
+    noteResolverRef.current = resolve
+    setNoteDraft({ title, value: initial })
+  }), [])
+  const finishNote = (value: string | null) => {
+    noteResolverRef.current?.(value)
+    noteResolverRef.current = null
+    setNoteDraft(null)
+  }
+
   useEffect(() => {
     if (document.fileType !== 'markdown' || readerMode !== 'rendered') return undefined
     const frame = window.requestAnimationFrame(() => {
@@ -95,11 +109,11 @@ export function useReaderAnnotations({
     setSelectionAction(readReaderSelection())
   }
 
-  const saveSelectionAnnotation = useCallback(async (kind: 'highlight' | 'note', action = selectionAction) => {
+  const saveSelectionAnnotation = useCallback(async (kind: 'highlight' | 'note', action = selectionAction, color: AnnotationColor = 'yellow') => {
     if (!action) return
     let note: string | undefined
     if (kind === 'note') {
-      const value = window.prompt('输入批注（最多 2000 字）', '')
+      const value = await askNote('输入批注（最多 2000 字）', '')
       if (value === null) return
       note = value.trim().slice(0, 2000)
     }
@@ -110,7 +124,7 @@ export function useReaderAnnotations({
       kind,
       anchor: action.anchor,
       note,
-      color: 'yellow',
+      color: kind === 'highlight' ? color : 'yellow',
       status: 'active',
       createdAt: now,
       updatedAt: now,
@@ -120,7 +134,16 @@ export function useReaderAnnotations({
     setSelectionAction(null)
     window.getSelection()?.removeAllRanges()
     onShowToast(kind === 'note' ? '批注已保存' : '已高亮所选文字', 'success')
-  }, [annotationRepository, document.id, onShowToast, selectionAction, setAnnotations, setSelectionAction])
+  }, [annotationRepository, askNote, document.id, onShowToast, selectionAction, setAnnotations, setSelectionAction])
+
+  const highlightCurrentSelection = async (color: AnnotationColor = 'yellow') => {
+    const current = readReaderSelection()
+    if (!current) {
+      onShowToast('请先选择要高亮的文字', 'warning')
+      return
+    }
+    await saveSelectionAnnotation('highlight', current, color)
+  }
 
   const handleNativeSelectionAction = useCallback((action: NativeSelectionAction) => {
     setReaderToolsOpen(false)
@@ -167,7 +190,7 @@ export function useReaderAnnotations({
   }
 
   const editAnnotation = async (item: DocumentAnnotation) => {
-    const value = window.prompt('编辑批注（最多 2000 字）', item.note ?? '')
+    const value = await askNote('编辑批注（最多 2000 字）', item.note ?? '')
     if (value === null) return
     const updated: DocumentAnnotation = {
       ...item,
@@ -207,6 +230,11 @@ export function useReaderAnnotations({
       return
     }
     const text = annotationsToMarkdown(document.fileName, annotations)
+    if (desktopPlatform.isDesktop()) {
+      const saved = await desktopPlatform.saveTextFile(text, `${document.fileName.replace(/\.[^.]+$/, '')}-批注.md`)
+      if (saved) onShowToast('批注摘要已导出', 'success')
+      return
+    }
     if (Capacitor.isNativePlatform()) {
       await Share.share({ title: `${document.fileName} 批注`, text, dialogTitle: '分享批注摘要' })
     } else {
@@ -225,5 +253,9 @@ export function useReaderAnnotations({
     editAnnotation,
     jumpToAnnotation,
     exportAnnotations,
+    noteDraft,
+    setNoteDraft,
+    finishNote,
+    highlightCurrentSelection,
   }
 }

@@ -16,6 +16,7 @@ export type ReaderState = {
 
 export type AnnotationKind = 'highlight' | 'note' | 'bookmark'
 export type AnnotationStatus = 'active' | 'orphaned'
+export type AnnotationColor = 'yellow' | 'green' | 'blue'
 
 export type AnnotationAnchor = {
   revision: string
@@ -33,7 +34,7 @@ export type DocumentAnnotation = {
   kind: AnnotationKind
   anchor: AnnotationAnchor
   note?: string
-  color: 'yellow'
+  color?: AnnotationColor
   status: AnnotationStatus
   createdAt: string
   updatedAt: string

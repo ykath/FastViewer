@@ -6,7 +6,7 @@ import { FileMenu } from './FileMenu'
 import { useReaderAnnotations } from './useReaderAnnotations'
 import { useReaderSearch } from './useReaderSearch'
 import { useReaderExport } from './useReaderExport'
-import { AlertCircle, ChevronLeft, ChevronDown, ChevronUp, Copy, FileCode2, FileText, FolderOpen, Highlighter, ImageDown, ListTree, Loader2, Menu, MessageSquare, Moon, Pin, PinOff, Search, Share2, ShieldCheck, SlidersHorizontal, Sun, X } from 'lucide-react'
+import { AlertCircle, ChevronLeft, ChevronDown, ChevronUp, Copy, FileCode2, FileText, FolderOpen, ImageDown, ListTree, Loader2, Menu, MessageSquare, Moon, Pin, PinOff, Search, Share2, ShieldCheck, SlidersHorizontal, Sun, X } from 'lucide-react'
 import React, { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import QRCode from 'qrcode'
 import { Capacitor } from '@capacitor/core'
@@ -88,7 +88,9 @@ export function ReaderPage({
   const isDesktop = desktopPlatform.isDesktop()
   const [tocOpen, setTocOpen] = useState(false)
   const [desktopTocOpen, setDesktopTocOpen] = useState(true)
-  const [desktopDirectoryMode, setDesktopDirectoryMode] = useState<'chapters' | 'files'>('chapters')
+  const [desktopDirectoryMode, setDesktopDirectoryMode] = useState<'chapters' | 'files' | 'annotations'>('chapters')
+  const [annotationKindFilter, setAnnotationKindFilter] = useState<'all' | 'highlight' | 'note' | 'bookmark'>('all')
+  const [annotationStatusFilter, setAnnotationStatusFilter] = useState<'all' | 'active' | 'orphaned'>('all')
   const [tocQuery, setTocQuery] = useState('')
   const [tocExpanded, setTocExpanded] = useState(true)
   const [activeHeadingId, setActiveHeadingId] = useState(document.lastReadHeadingId ?? '')
@@ -220,9 +222,8 @@ export function ReaderPage({
   }, [document.id])
 
   useEffect(() => {
-    setRenderFailed(false)
-    setMarkdownRenderAttempt(0)
-  }, [document.content, document.id])
+    if (document.fileType !== 'markdown' && desktopDirectoryMode === 'annotations') setDesktopDirectoryMode('chapters')
+  }, [desktopDirectoryMode, document.fileType])
 
   useEffect(() => {
     setReaderToolbarY(settings.readerToolbarY)
@@ -373,6 +374,10 @@ export function ReaderPage({
     editAnnotation,
     jumpToAnnotation,
     exportAnnotations,
+    noteDraft,
+    setNoteDraft,
+    finishNote,
+    highlightCurrentSelection,
   } = useReaderAnnotations({
     document,
     readerMode,
@@ -547,12 +552,14 @@ export function ReaderPage({
       else if (command === 'font-increase') changeFontSize(1)
       else if (command === 'font-decrease') changeFontSize(-1)
       else if (command === 'font-reset') onSetSettings({ ...settings, fontSizeLevel: 2 })
+      else if (command === 'bookmark') void addBookmark()
+      else if (command === 'highlight') void highlightCurrentSelection()
     }
     window.addEventListener('lightpage-reader-command', handleCommand)
     return () => window.removeEventListener('lightpage-reader-command', handleCommand)
   // Reader commands intentionally bind the current settings snapshot.
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [settings])
+  }, [addBookmark, highlightCurrentSelection, settings])
 
   const toggleFavorite = () => {
     onUpdate({ isFavorite: !document.isFavorite })
@@ -1122,7 +1129,12 @@ export function ReaderPage({
       onCopyText={() => { void copyText() }}
       onCopyRichText={() => { void copyRichText() }}
       onAddBookmark={() => { void addBookmark() }}
-      onOpenAnnotations={() => setAnnotationsOpen(true)}
+      onOpenAnnotations={() => {
+        if (isDesktop) {
+          setDesktopTocOpen(true)
+          setDesktopDirectoryMode('annotations')
+        } else setAnnotationsOpen(true)
+      }}
       onExportAnnotations={() => { void exportAnnotations() }}
       onOpenPackage={() => setPackageOpen(true)}
       onOpenHtmlPermissions={() => setHtmlPermissionsOpen(true)}
@@ -1131,6 +1143,45 @@ export function ReaderPage({
       onOpenImageExport={() => setImageExportOpen(true)}
       onShareOriginal={() => { void shareOriginalFile() }}
     />
+  )
+
+  const visibleAnnotations = [...annotations]
+    .filter((item) => (
+      (annotationKindFilter === 'all' || item.kind === annotationKindFilter)
+      && (annotationStatusFilter === 'all' || item.status === annotationStatusFilter)
+    ))
+    .sort((left, right) => left.anchor.start - right.anchor.start)
+
+  const renderAnnotationBrowser = () => (
+    <>
+      <div className="annotation-filters" role="toolbar" aria-label="批注筛选">
+        {([['all', '全部'], ['highlight', '高亮'], ['note', '批注'], ['bookmark', '书签']] as const).map(([value, label]) => (
+          <button key={value} type="button" className={annotationKindFilter === value ? 'active' : ''} onClick={() => setAnnotationKindFilter(value)}>{label}</button>
+        ))}
+        {([['active', '有效'], ['orphaned', '待关联']] as const).map(([value, label]) => (
+          <button key={value} type="button" className={annotationStatusFilter === value ? 'active' : ''} onClick={() => setAnnotationStatusFilter((current) => current === value ? 'all' : value)}>{label}</button>
+        ))}
+      </div>
+      {visibleAnnotations.length === 0 ? (
+        <p className="sheet-description">选择文字后可高亮或批注，也可以添加章节书签。</p>
+      ) : (
+        <div className="annotation-list">
+          {visibleAnnotations.map((item) => (
+            <article className={`annotation-item color-${item.color ?? 'yellow'}${item.status === 'orphaned' ? ' orphaned' : ''}`} key={item.id}>
+              <button type="button" className="annotation-main" data-heading-id={item.anchor.headingId} onClick={() => jumpToAnnotation(item)}>
+                <strong>{item.kind === 'bookmark' ? '书签' : item.kind === 'note' ? '批注' : '高亮'}{item.status === 'orphaned' ? ' · 待重新关联' : ''}</strong>
+                <span>{item.anchor.exact || item.anchor.headingId || '当前位置'}</span>
+                {item.note && <small>{item.note}</small>}
+              </button>
+              {item.anchor.exact && <button type="button" className="annotation-card" onClick={() => setShareCardText(item.anchor.exact)} aria-label="生成阅读卡片"><Share2 size={16} /></button>}
+              {item.kind === 'note' && <button type="button" className="annotation-card" onClick={() => { void editAnnotation(item) }} aria-label="编辑批注"><MessageSquare size={16} /></button>}
+              <button type="button" className="annotation-delete" onClick={() => { void removeAnnotation(item.id) }} aria-label="删除批注"><X size={16} /></button>
+            </article>
+          ))}
+        </div>
+      )}
+      {annotations.length > 0 && <button className="primary-action compact" type="button" onClick={() => { void exportAnnotations() }}>{isDesktop ? '导出批注摘要' : '分享批注摘要'}</button>}
+    </>
   )
 
   const handleDesktopTocWheel = (event: React.WheelEvent<HTMLElement>) => {
@@ -1293,6 +1344,17 @@ export function ReaderPage({
             >
               当前目录
             </button>
+            {document.fileType === 'markdown' && (
+              <button
+                type="button"
+                role="tab"
+                aria-selected={desktopDirectoryMode === 'annotations'}
+                className={desktopDirectoryMode === 'annotations' ? 'active' : ''}
+                onClick={() => setDesktopDirectoryMode('annotations')}
+              >
+                批注
+              </button>
+            )}
           </div>
           <button className="icon-button" type="button" onClick={() => setDesktopTocOpen(false)} aria-label="收起目录">
             <X size={17} />
@@ -1315,8 +1377,8 @@ export function ReaderPage({
             <DirectorySortControl value={directorySortMode} onChange={onDirectorySortModeChange} />
           </div>
         )}
-        <div className="desktop-toc-content" role="region" aria-label={desktopDirectoryMode === 'chapters' ? '可滚动章节列表' : '当前目录文档列表'} tabIndex={0}>
-          {desktopDirectoryMode === 'chapters' ? renderTableOfContents(false) : renderCurrentDirectory()}
+        <div className="desktop-toc-content" role="region" aria-label={desktopDirectoryMode === 'chapters' ? '可滚动章节列表' : desktopDirectoryMode === 'annotations' ? '批注列表' : '当前目录文档列表'} tabIndex={0}>
+          {desktopDirectoryMode === 'annotations' ? renderAnnotationBrowser() : desktopDirectoryMode === 'chapters' ? renderTableOfContents(false) : renderCurrentDirectory()}
         </div>
       </aside>
 
@@ -1504,7 +1566,9 @@ export function ReaderPage({
           style={{ left: selectionAction.x, top: selectionAction.y }}
           onPointerDown={(event) => event.preventDefault()}
         >
-          <button type="button" onClick={() => { void saveSelectionAnnotation('highlight') }}><Highlighter size={16} />高亮</button>
+          <button type="button" onClick={() => { void saveSelectionAnnotation('highlight', selectionAction, 'yellow') }} aria-label="黄色高亮"><span className="highlight-swatch yellow" /></button>
+          <button type="button" onClick={() => { void saveSelectionAnnotation('highlight', selectionAction, 'green') }} aria-label="绿色高亮"><span className="highlight-swatch green" /></button>
+          <button type="button" onClick={() => { void saveSelectionAnnotation('highlight', selectionAction, 'blue') }} aria-label="蓝色高亮"><span className="highlight-swatch blue" /></button>
           <button type="button" onClick={() => { void saveSelectionAnnotation('note') }}><MessageSquare size={16} />批注</button>
           <button type="button" onClick={() => { setShareCardText(selectionAction.anchor.exact); setSelectionAction(null); window.getSelection()?.removeAllRanges() }}><Share2 size={16} />卡片</button>
           <button type="button" onClick={() => setSelectionAction(null)} aria-label="关闭"><X size={15} /></button>
@@ -1558,25 +1622,7 @@ export function ReaderPage({
 
       {annotationsOpen && (
         <Sheet title="批注与书签" onClose={() => setAnnotationsOpen(false)}>
-          {annotations.length === 0 ? (
-            <p className="sheet-description">长按选择 Markdown 文字即可高亮或添加批注，也可以从文件菜单添加章节书签。</p>
-          ) : (
-            <div className="annotation-list">
-              {[...annotations].sort((left, right) => left.anchor.start - right.anchor.start).map((item) => (
-                <article className={`annotation-item${item.status === 'orphaned' ? ' orphaned' : ''}`} key={item.id}>
-                  <button type="button" className="annotation-main" data-heading-id={item.anchor.headingId} onClick={() => jumpToAnnotation(item)}>
-                    <strong>{item.kind === 'bookmark' ? '书签' : item.kind === 'note' ? '批注' : '高亮'}{item.status === 'orphaned' ? ' · 待重新关联' : ''}</strong>
-                    <span>{item.anchor.exact || item.anchor.headingId || '当前位置'}</span>
-                    {item.note && <small>{item.note}</small>}
-                  </button>
-                  {item.anchor.exact && <button type="button" className="annotation-card" onClick={() => setShareCardText(item.anchor.exact)} aria-label="生成阅读卡片"><Share2 size={16} /></button>}
-                  {item.kind === 'note' && <button type="button" className="annotation-card" onClick={() => { void editAnnotation(item) }} aria-label="编辑批注"><MessageSquare size={16} /></button>}
-                  <button type="button" className="annotation-delete" onClick={() => { void removeAnnotation(item.id) }} aria-label="删除批注"><X size={16} /></button>
-                </article>
-              ))}
-            </div>
-          )}
-          {annotations.length > 0 && <button className="primary-action compact" type="button" onClick={() => { void exportAnnotations() }}>分享批注摘要</button>}
+          {renderAnnotationBrowser()}
         </Sheet>
       )}
 
@@ -1703,6 +1749,18 @@ export function ReaderPage({
             恢复严格沙盒
           </button>
         </Sheet>
+      )}
+      {noteDraft && (
+        <div className="note-prompt-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) finishNote(null) }}>
+          <form className="note-prompt" role="dialog" aria-modal="true" aria-label={noteDraft.title} onSubmit={(event) => { event.preventDefault(); finishNote(noteDraft.value) }}>
+            <strong>{noteDraft.title}</strong>
+            <textarea autoFocus maxLength={2000} value={noteDraft.value} aria-label="批注内容" onChange={(event) => setNoteDraft({ ...noteDraft, value: event.target.value })} />
+            <div className="note-prompt-actions">
+              <button type="button" onClick={() => finishNote(null)}>取消</button>
+              <button className="primary-action compact" type="submit">确定</button>
+            </div>
+          </form>
+        </div>
       )}
     </section>
   )

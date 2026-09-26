@@ -347,6 +347,18 @@ export function createDesktopPlatform(dependencies: DesktopPlatformDependencies 
       return true
     },
 
+    async saveTextFile(text: string, fileName: string): Promise<boolean> {
+      if (!isDesktop()) return false
+      const path = await dependencies.saveDialog({
+        title: '导出批注摘要',
+        defaultPath: fileName,
+        filters: [{ name: 'Markdown', extensions: ['md'] }],
+      })
+      if (!path) return false
+      await dependencies.writeFile(path, new TextEncoder().encode(text))
+      return true
+    },
+
     async saveImages(images: DesktopImageFile[]): Promise<boolean> {
       if (!isDesktop() || images.length === 0) return false
       if (images.length === 1) {

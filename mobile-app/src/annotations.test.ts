@@ -32,4 +32,10 @@ describe('Markdown 批注锚点', () => {
     expect(markdown).toContain('目标文本')
     expect(markdown).toContain('重要结论')
   })
+
+  it('旧批注没有颜色时按黄色导出', () => {
+    const { color: _color, ...legacy } = annotation
+    const markdown = annotationsToMarkdown('示例.md', [{ ...legacy, kind: 'highlight', color: undefined }])
+    expect(markdown).toContain('颜色：黄色')
+  })
 })
