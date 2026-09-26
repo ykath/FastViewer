@@ -26,6 +26,8 @@ mobile-app/test-results/
 mobile-app/playwright-report/
 mobile-app/src-tauri/target/
 mobile-app/src-tauri/gen/schemas/
+mobile-app/src-tauri/binaries/
+mobile-app/url-importer/
 mobile-app/release/
 mobile-app/src-tauri/tauri.signing.conf.json
 
