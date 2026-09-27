@@ -864,9 +864,33 @@
   border: 0;
 }
 
+.markdown-table-block {
+  margin: 18px 0;
+}
+
+.markdown-table-block.has-hscroll .markdown-table-wrap {
+  scrollbar-width: none;
+}
+
+.markdown-table-block.has-hscroll .markdown-table-wrap::-webkit-scrollbar {
+  display: none;
+}
+
+.markdown-table-hscroll {
+  position: sticky;
+  bottom: env(safe-area-inset-bottom);
+  z-index: 2;
+  overflow-x: auto;
+  overflow-y: hidden;
+  background: var(--reader-surface);
+}
+
+.markdown-table-hscroll > div {
+  height: 1px;
+}
+
 .markdown-table-wrap {
   width: 100%;
-  margin: 18px 0;
   overflow-x: auto;
   border: 1px solid var(--border);
   border-radius: 8px;

@@ -394,7 +394,10 @@ const ProgressiveBlock = memo(function ProgressiveBlock({
 
 function ScrollableTableWrap({ children }: { children: React.ReactNode }) {
   const wrapRef = useRef<HTMLDivElement>(null)
+  const barRef = useRef<HTMLDivElement>(null)
+  const spacerRef = useRef<HTMLDivElement>(null)
   const [scrollable, setScrollable] = useState(false)
+  const [overflowing, setOverflowing] = useState(false)
 
   useEffect(() => {
     const element = wrapRef.current
@@ -402,7 +405,9 @@ function ScrollableTableWrap({ children }: { children: React.ReactNode }) {
     let frameId: number | null = null
     const check = () => {
       frameId = null
+      setOverflowing(element.scrollWidth > element.clientWidth + 2)
       setScrollable(element.scrollLeft + element.clientWidth < element.scrollWidth - 2)
+      if (spacerRef.current) spacerRef.current.style.width = `${element.scrollWidth}px`
     }
     const scheduleCheck = () => {
       if (frameId === null) frameId = window.requestAnimationFrame(check)
@@ -410,6 +415,8 @@ function ScrollableTableWrap({ children }: { children: React.ReactNode }) {
     scheduleCheck()
     const observer = new ResizeObserver(scheduleCheck)
     observer.observe(element)
+    const table = element.querySelector('table')
+    if (table) observer.observe(table)
     element.addEventListener('scroll', scheduleCheck, { passive: true })
     return () => {
       observer.disconnect()
@@ -418,9 +425,37 @@ function ScrollableTableWrap({ children }: { children: React.ReactNode }) {
     }
   }, [])
 
+  useEffect(() => {
+    const element = wrapRef.current
+    const bar = barRef.current
+    if (!overflowing || !element || !bar) return undefined
+    if (spacerRef.current) spacerRef.current.style.width = `${element.scrollWidth}px`
+    bar.scrollLeft = element.scrollLeft
+    // 位置已一致时不再回写，避免两侧互相触发
+    const sync = (from: HTMLElement, to: HTMLElement) => () => {
+      if (Math.abs(to.scrollLeft - from.scrollLeft) < 1) return
+      to.scrollLeft = from.scrollLeft
+    }
+    const onWrapScroll = sync(element, bar)
+    const onBarScroll = sync(bar, element)
+    element.addEventListener('scroll', onWrapScroll, { passive: true })
+    bar.addEventListener('scroll', onBarScroll, { passive: true })
+    return () => {
+      element.removeEventListener('scroll', onWrapScroll)
+      bar.removeEventListener('scroll', onBarScroll)
+    }
+  }, [overflowing])
+
   return (
-    <div ref={wrapRef} className={`markdown-table-wrap${scrollable ? ' scrollable' : ''}`}>
-      <table>{children}</table>
+    <div className={`markdown-table-block${overflowing ? ' has-hscroll' : ''}`}>
+      <div ref={wrapRef} className={`markdown-table-wrap${scrollable ? ' scrollable' : ''}`}>
+        <table>{children}</table>
+      </div>
+      {overflowing && (
+        <div ref={barRef} className="markdown-table-hscroll" aria-hidden="true">
+          <div ref={spacerRef} />
+        </div>
+      )}
     </div>
   )
 }
