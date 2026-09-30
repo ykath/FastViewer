@@ -229,20 +229,34 @@ fn open_reader_window_impl(
         .inner_size(1100.0, 760.0)
         .min_inner_size(720.0, 520.0)
         .resizable(true)
+        .center()
         .initialization_script(script)
         .build()
         .map_err(|error| format!("无法创建阅读窗口：{error}"))?;
     if let Ok(mut guard) = documents.0.lock() {
         guard.insert(label.clone(), request.path.clone());
     }
-    if let Some(anchor) = app.get_webview_window("main").or_else(|| {
-        app.webview_windows()
-            .into_values()
-            .find(|candidate| candidate.label() != label)
-    }) {
-        if let Ok(position) = anchor.outer_position() {
-            let offset = 28 * reader_count as i32;
-            let _ = window.set_position(PhysicalPosition::new(position.x + offset, position.y + offset));
+    // A minimized window reports (-32000, -32000); cascading from it puts the
+    // new window off-screen, so only cascade from a window that is on screen.
+    let anchor = app
+        .get_webview_window("main")
+        .into_iter()
+        .chain(app.webview_windows().into_values())
+        .find(|candidate| {
+            candidate.label() != label
+                && candidate.is_visible().unwrap_or(false)
+                && !candidate.is_minimized().unwrap_or(true)
+        });
+    if let Some(position) = anchor.and_then(|anchor| anchor.outer_position().ok()) {
+        let offset = 28 * reader_count as i32;
+        let target = PhysicalPosition::new(position.x + offset, position.y + offset);
+        let on_screen = app
+            .monitor_from_point(target.x as f64, target.y as f64)
+            .ok()
+            .flatten()
+            .is_some();
+        if on_screen {
+            let _ = window.set_position(target);
         }
     }
     present_webview_window(&window);
