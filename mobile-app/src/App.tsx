@@ -1353,6 +1353,10 @@ function App() {
             onPickFile={() => { void openFilePicker() }}
             onPasteOpen={() => { void openPasteDialog() }}
             onDelete={deleteDocument}
+            onOpenInNewWindow={isDesktop ? (document) => {
+              if (!document.sourceUri) return
+              void openDirectoryInNewWindow(document.sourceUri)
+            } : undefined}
             onRevealFile={isDesktop ? (document) => {
               if (!document.sourceUri) return
               void desktopPlatform.revealInFileManager(document.sourceUri)

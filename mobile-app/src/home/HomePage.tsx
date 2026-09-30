@@ -1,7 +1,7 @@
 import { type FileSortMode, type HomeTab } from '../app/types'
 import { collapsePackageDocuments, formatBytes, formatTime } from '../app/records'
 import { EmptyState } from '../ui/chrome'
-import { Copy, FileCode2, FileText, FolderOpen, Search, ShieldCheck, Star, X } from 'lucide-react'
+import { AppWindow, Copy, FileCode2, FileText, FolderOpen, Search, ShieldCheck, Star, X } from 'lucide-react'
 import { useEffect, useMemo, useState } from 'react'
 import type { ReactNode } from 'react'
 import type { DocumentRecord } from '../document-types'
@@ -18,6 +18,7 @@ export type HomePageProps = {
   onPasteOpen: () => void
   onDelete: (doc: DocumentRecord) => void
   onRevealFile?: (doc: DocumentRecord) => void
+  onOpenInNewWindow?: (doc: DocumentRecord) => void
   onClearTab: (tab: HomeTab) => void
   onToggleFavorite: (doc: DocumentRecord) => void
   onFullTextSearch?: (query: string) => Promise<HomeSearchResult>
@@ -33,6 +34,7 @@ export function HomePage({
   onPasteOpen,
   onDelete,
   onRevealFile,
+  onOpenInNewWindow,
   onClearTab,
   onToggleFavorite,
   onFullTextSearch,
@@ -254,6 +256,17 @@ export function HomePage({
                 <span className="file-kind">{file.packageId ? '文档包' : file.fileExtension.toUpperCase()}</span>
               </button>
               <div className="file-row-actions">
+                {directoryPath && onOpenInNewWindow && (
+                  <button
+                    className="row-action"
+                    type="button"
+                    aria-label={`在新窗口打开 ${file.fileName}`}
+                    title="在新窗口打开"
+                    onClick={() => onOpenInNewWindow(file)}
+                  >
+                    <AppWindow size={16} />
+                  </button>
+                )}
                 {directoryPath && onRevealFile && (
                   <button
                     className="row-action"

@@ -105,10 +105,68 @@ fn split_launch_requests<T>(mut requests: Vec<T>) -> (Vec<T>, Vec<T>) {
     (requests, extras)
 }
 
-fn focus_webview_window(window: &tauri::WebviewWindow) {
+fn present_webview_window(window: &tauri::WebviewWindow) {
     let _ = window.unminimize();
     let _ = window.show();
+    // Never call WebviewWindow::set_focus on Windows. tao injects a synthetic
+    // Alt key when SetForegroundWindow fails, which sticks the shell in menu mode.
+    activate_without_alt_hack(window);
+}
+
+#[cfg(windows)]
+fn activate_without_alt_hack(window: &tauri::WebviewWindow) {
+    use windows::Win32::UI::WindowsAndMessaging::{BringWindowToTop, SetForegroundWindow};
+    let Ok(hwnd) = window.hwnd() else {
+        return;
+    };
+    unsafe {
+        let _ = SetForegroundWindow(hwnd);
+        let _ = BringWindowToTop(hwnd);
+    }
+}
+
+#[cfg(not(windows))]
+fn activate_without_alt_hack(window: &tauri::WebviewWindow) {
     let _ = window.set_focus();
+}
+
+#[cfg(windows)]
+fn claim_foreground(window: &tauri::WebviewWindow) -> bool {
+    use windows::Win32::System::Threading::{AttachThreadInput, GetCurrentThreadId};
+    use windows::Win32::UI::WindowsAndMessaging::{
+        AllowSetForegroundWindow, GetForegroundWindow, GetWindowThreadProcessId, SetForegroundWindow,
+    };
+
+    let Ok(target) = window.hwnd() else {
+        return false;
+    };
+    const ASFW_ANY: u32 = u32::MAX;
+    unsafe {
+        let _ = AllowSetForegroundWindow(ASFW_ANY);
+        let foreground = GetForegroundWindow();
+        let foreground_thread = if foreground.is_invalid() {
+            0
+        } else {
+            GetWindowThreadProcessId(foreground, None)
+        };
+        let current_thread = GetCurrentThreadId();
+        let attached = foreground_thread != 0
+            && foreground_thread != current_thread
+            && AttachThreadInput(current_thread, foreground_thread, true).as_bool();
+        let claimed = SetForegroundWindow(target).as_bool();
+        if attached {
+            let _ = AttachThreadInput(current_thread, foreground_thread, false);
+        }
+        claimed
+    }
+}
+
+#[cfg(windows)]
+fn set_foreground_lock(lock: bool) {
+    use windows::Win32::UI::WindowsAndMessaging::{LockSetForegroundWindow, LSFW_LOCK, LSFW_UNLOCK};
+    unsafe {
+        let _ = LockSetForegroundWindow(if lock { LSFW_LOCK } else { LSFW_UNLOCK });
+    }
 }
 
 fn enqueue_open_request(app: &tauri::AppHandle, request: DesktopOpenRequest) -> bool {
@@ -139,7 +197,7 @@ fn open_reader_window_impl(
     };
     if let Some(label) = existing_label {
         if let Some(window) = app.get_webview_window(&label) {
-            focus_webview_window(&window);
+            present_webview_window(&window);
             return Ok(());
         }
         if let Ok(mut guard) = documents.0.lock() {
@@ -187,27 +245,38 @@ fn open_reader_window_impl(
             let _ = window.set_position(PhysicalPosition::new(position.x + offset, position.y + offset));
         }
     }
-    focus_webview_window(&window);
+    present_webview_window(&window);
     Ok(())
 }
 
 fn open_association_requests(app: tauri::AppHandle, requests: Vec<(PathBuf, DesktopOpenRequest)>) {
-    // WebView2 deadlocks if a window is created on the single-instance callback thread.
+    // Runs on the UI thread inside WM_COPYDATA, while Explorer's second process
+    // still owns the foreground. Take it before SendMessage returns. Creating
+    // the WebView here deadlocks WebView2, so that happens after the handler.
+    #[cfg(windows)]
+    let claimed = app
+        .get_webview_window("main")
+        .is_some_and(|window| claim_foreground(&window));
+    #[cfg(windows)]
+    if claimed {
+        set_foreground_lock(true);
+    }
     std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        #[cfg(windows)]
+        set_foreground_lock(false);
         let mut queued = false;
         for (path, request) in requests {
             if allow_request(&app, &path).is_err() {
                 continue;
             }
-            if open_reader_window_impl(&app, &path, &request).is_err() && enqueue_open_request(&app, request)
+            if open_reader_window_impl(&app, &path, &request).is_err()
+                && enqueue_open_request(&app, request)
             {
                 queued = true;
             }
         }
         if queued {
-            if let Some(window) = app.get_webview_window("main") {
-                focus_webview_window(&window);
-            }
             let _ = app.emit("desktop-open-requested", ());
         }
     });
@@ -542,7 +611,11 @@ pub fn run() {
             let requests = requests_from_args(args.into_iter().skip(1), "association");
             if requests.is_empty() {
                 if let Some(window) = app.get_webview_window("main") {
-                    focus_webview_window(&window);
+                    #[cfg(windows)]
+                    {
+                        let _ = claim_foreground(&window);
+                    }
+                    present_webview_window(&window);
                 }
                 return;
             }
