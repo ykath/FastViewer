@@ -430,7 +430,44 @@ export function createDesktopPlatform(dependencies: DesktopPlatformDependencies 
       if (!isDesktop()) return
       await dependencies.invoke<void>('add_recent_document', { path })
     },
+
+    async currentWindowLabel(): Promise<string> {
+      if (!isDesktop()) return 'main'
+      const { getCurrentWindow } = await import('@tauri-apps/api/window')
+      return getCurrentWindow().label
+    },
+
+    async openInNewWindow(path: string): Promise<void> {
+      if (!isDesktop()) return
+      await dependencies.invoke<void>('open_reader_window', { path })
+    },
+
+    async setWindowDocument(path: string | null, title: string): Promise<void> {
+      if (!isDesktop()) return
+      await dependencies.invoke<void>('set_window_document', { path, title })
+    },
+
+    async currentWindowDocument(): Promise<string | null> {
+      if (!isDesktop()) return null
+      return dependencies.invoke<string | null>('current_window_document')
+    },
+
+    bootDocumentPath() {
+      return bootDocumentPath()
+    },
   }
+}
+
+export function bootDocumentPath() {
+  const value = (globalThis as { __LIGHTPAGE_DOCUMENT_PATH__?: unknown }).__LIGHTPAGE_DOCUMENT_PATH__
+  return typeof value === 'string' && value.length > 0 ? value : null
+}
+
+export function splitDroppedDocuments<T>(files: readonly T[], hasOpenDocument: boolean) {
+  if (files.length === 0) return { current: null as T | null, extra: [] as T[] }
+  if (hasOpenDocument) return { current: null as T | null, extra: [...files] }
+  const [current, ...extra] = files
+  return { current: current ?? null, extra }
 }
 
 function sameDocumentRevision(left: DesktopDocumentRevision, right: DesktopDocumentRevision) {

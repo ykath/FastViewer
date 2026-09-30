@@ -10,29 +10,29 @@
 
 | 平台 | 当前源码版本 | 最新公开 Release | 说明 |
 | --- | --- | --- | --- |
-| Windows x64 | **1.6.0** | **v1.6.0** | 提供未签名的安装版和便携版 |
-| Android | **1.6.0**（`versionCode 10`） | **v1.6.0** | 提供正式证书签名 APK |
+| Windows x64 | **1.6.1** | **v1.6.1** | 提供未签名的安装版和便携版 |
+| Android | **1.6.1**（`versionCode 11`） | **v1.6.1** | 提供正式证书签名 APK |
 
-> `v1.6.0` 同时包含 Windows 与 Android 构建。从调试证书安装的旧版本升级到正式签名 APK 时，需要先卸载再安装。
+> `v1.6.1` 同时包含 Windows 与 Android 构建。从调试证书安装的旧版本升级到正式签名 APK 时，需要先卸载再安装。
 
 ## 下载
 
 请从项目的 [GitHub Releases](https://github.com/ykath/FastViewer/releases) 下载，避免使用来源不明的安装文件。
 
-### Windows 1.6.0
+### Windows 1.6.1
 
 [前往最新 Release](https://github.com/ykath/FastViewer/releases/latest)：
 
-- 安装版：`LightPage_1.6.0_windows-x64-setup.exe`
-- 便携版：`LightPage_1.6.0_windows-x64.exe`
+- 安装版：`LightPage_1.6.1_windows-x64-setup.exe`
+- 便携版：`LightPage_1.6.1_windows-x64.exe`
 
 推荐普通用户使用安装版。便携版依赖目标电脑已安装 Microsoft Edge WebView2 Runtime。
 
-### Android 1.6.0
+### Android 1.6.1
 
 Android 安装包与 Windows 版本一并发布：
 
-- `LightPage_1.6.0_android.apk`
+- `LightPage_1.6.1_android.apk`
 
 > Android APK 使用正式证书签名。已经安装调试证书版本的设备需要先卸载再安装。Windows 文件尚未进行代码签名，SmartScreen 可能显示安全提示。
 
@@ -78,7 +78,7 @@ Android 安装包与 Windows 版本一并发布：
 
 ## 平台差异与已知限制
 
-| 能力 | Android 1.6.0 | Windows 1.6.0 |
+| 能力 | Android 1.6.1 | Windows 1.6.1 |
 | --- | --- | --- |
 | 从其他应用/资源管理器打开 | 支持 Android Intent 与系统分享入口 | 支持文件选择、拖放、文件关联和单实例唤起 |
 | ZIP / RAR 文档包 | 支持 ZIP 与 RAR | 支持 ZIP；RAR 会提示先转换为 ZIP |
@@ -91,15 +91,22 @@ Android 安装包与 Windows 版本一并发布：
 
 其他限制：
 
-- Windows 当前不提供多标签、后台标签恢复或并排阅读。
+- Windows 用多个独立窗口对照阅读，不提供多标签或后台标签恢复。
 - Windows 只枚举和打开受支持的 Markdown / HTML 文档；目录收藏不是完整的文件管理器或在线工作区。
 - Android 的 RAR 解压依赖当前原生库，不支持 RAR5 或加密压缩包；这类文件请转换为 ZIP 或 RAR4。
 - HTML 默认采用最小权限沙箱策略；被拦截的脚本或远程资源需要用户明确授权，不能假定任意网页应用都能完整运行。
-- Android 1.6.0 使用正式证书签名；Windows 仍未代码签名。调试证书安装的 Android 版本不能直接覆盖正式包。
+- Android 1.6.1 使用正式证书签名；Windows 仍未代码签名。调试证书安装的 Android 版本不能直接覆盖正式包。
 
 ## 版本变化
 
-### v1.6.0（2026-09-26，当前公开版本）
+### v1.6.1（2026-09-30，当前公开版本）
+
+- Windows 支持同时打开多个阅读窗口。资源管理器再次打开文件时保留当前窗口，并新建窗口显示新文件。
+- 命令面板 `Ctrl+Shift+O`、文件菜单、目录列表的「新窗口」和按住 Ctrl 点击 Markdown 文档链接，都可以在新窗口打开。
+- 当前窗口已打开文档时，拖入的文件会分别进入新窗口。
+- Android `versionCode` 更新为 11。Windows 安装包仍未代码签名。
+
+### v1.6.0（2026-09-26）
 
 - Windows 阅读栏增加批注页签，高亮可选黄、绿、蓝三色，并用应用内输入替代系统提示框。
 - `Ctrl+B` 添加书签，`Ctrl+Shift+H` 高亮选区，`Ctrl+Shift+B` 打开目录；桌面端可将批注摘要保存为 Markdown。

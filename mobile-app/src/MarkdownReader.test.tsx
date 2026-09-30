@@ -188,7 +188,7 @@ describe('MarkdownReader', () => {
     fireEvent.click(screen.getByRole('link', { name: '指南' }))
     fireEvent.click(screen.getByRole('link', { name: '站点' }))
 
-    expect(onOpenDocumentLink).toHaveBeenCalledWith('./guide.md')
+    expect(onOpenDocumentLink).toHaveBeenCalledWith('./guide.md', { newWindow: false })
     expect(onOpenExternalLink).toHaveBeenCalledWith('https://example.com')
   })
 

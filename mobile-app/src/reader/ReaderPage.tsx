@@ -51,6 +51,8 @@ export type ReaderPageProps = {
     path: string,
     options: { fromDocumentLink: boolean; headingId: string },
   ) => void
+  onOpenDesktopDocumentInNewWindow: (path: string) => void
+  onOpenFileInNewWindow: () => void
   linkNavigationHeadingId: string | null
   onConsumeLinkNavigationHeading: () => void
   annotationRepository: DocumentRepository
@@ -59,6 +61,7 @@ export type ReaderPageProps = {
   directoryPinned: boolean
   onToggleDirectoryPin: () => void
   onOpenDirectoryDocument: (path: string) => void
+  onOpenDirectoryDocumentInNewWindow: (path: string) => void
   onDirectorySortModeChange: (mode: DirectorySortMode) => void
   pendingSearchQuery?: string | null
 }
@@ -76,6 +79,8 @@ export function ReaderPage({
   onOpenPackageDocument,
   onOpenPackageDocumentFromLink,
   onOpenDesktopDocument,
+  onOpenDesktopDocumentInNewWindow,
+  onOpenFileInNewWindow,
   linkNavigationHeadingId,
   onConsumeLinkNavigationHeading,
   annotationRepository,
@@ -84,6 +89,7 @@ export function ReaderPage({
   directoryPinned,
   onToggleDirectoryPin,
   onOpenDirectoryDocument,
+  onOpenDirectoryDocumentInNewWindow,
   onDirectorySortModeChange,
   pendingSearchQuery,
 }: ReaderPageProps) {
@@ -151,7 +157,7 @@ export function ReaderPage({
   const handleOpenExternalLink = useCallback((url: string) => {
     void desktopPlatform.openExternalLink(url)
   }, [])
-  const handleOpenDocumentLink = useCallback((href: string) => {
+  const handleOpenDocumentLink = useCallback((href: string, options?: { newWindow?: boolean }) => {
     if (classifyMarkdownLink(href) !== 'document') return
 
     const linkContext = {
@@ -182,6 +188,10 @@ export function ReaderPage({
         onShowToast('无法打开该文档链接', 'warning')
         return
       }
+      if (options?.newWindow) {
+        onOpenDesktopDocumentInNewWindow(desktopPath.path)
+        return
+      }
       onOpenDesktopDocument(desktopPath.path, { fromDocumentLink: true, headingId: desktopPath.hash })
       return
     }
@@ -200,7 +210,7 @@ export function ReaderPage({
     }
 
     onShowToast('无法打开该文档链接', 'warning')
-  }, [document, onOpenDesktopDocument, onOpenPackageDocumentFromLink, onShowToast, packageDocuments])
+  }, [document, onOpenDesktopDocument, onOpenDesktopDocumentInNewWindow, onOpenPackageDocumentFromLink, onShowToast, packageDocuments])
   const handleRenderPlanReady = useCallback((plan: { plainText: string; revision?: string }) => {
     setRenderPlainText(plan.plainText)
     const revision = plan.revision ?? `${document.id}:${plan.plainText.length}`
@@ -1102,19 +1112,28 @@ export function ReaderPage({
         {sortedDirectoryFiles.map((file) => {
           const selected = file.path.replace(/\\/g, '/').toLocaleLowerCase() === activePath
           return (
-            <button
-              key={file.path}
-              className={`directory-document${selected ? ' active' : ''}`}
-              type="button"
-              disabled={selected}
-              title={file.path}
-              onClick={() => onOpenDirectoryDocument(file.path)}
-            >
-              {file.fileName.toLocaleLowerCase().endsWith('.html') || file.fileName.toLocaleLowerCase().endsWith('.htm')
-                ? <FileCode2 size={16} />
-                : <FileText size={16} />}
-              <span><strong>{file.fileName}</strong><small>{directoryFileDetails(file)}</small></span>
-            </button>
+            <div key={file.path} className="directory-file-row">
+              <button
+                className={`directory-document${selected ? ' active' : ''}`}
+                type="button"
+                disabled={selected}
+                title={file.path}
+                onClick={() => onOpenDirectoryDocument(file.path)}
+              >
+                {file.fileName.toLocaleLowerCase().endsWith('.html') || file.fileName.toLocaleLowerCase().endsWith('.htm')
+                  ? <FileCode2 size={16} />
+                  : <FileText size={16} />}
+                <span><strong>{file.fileName}</strong><small>{directoryFileDetails(file)}</small></span>
+              </button>
+              <button
+                className="directory-new-window"
+                type="button"
+                aria-label={`在新窗口打开 ${file.fileName}`}
+                onClick={() => onOpenDirectoryDocumentInNewWindow(file.path)}
+              >
+                新窗口
+              </button>
+            </div>
           )
         })}
       </div>
@@ -1131,6 +1150,7 @@ export function ReaderPage({
       exporting={exporting}
       renderFailed={renderFailed}
       onReload={onReload}
+      onOpenInNewWindow={isDesktop ? onOpenFileInNewWindow : undefined}
       onClose={() => setMenuOpen(false)}
       onSaveToLibrary={saveToLibrary}
       onToggleFavorite={toggleFavorite}

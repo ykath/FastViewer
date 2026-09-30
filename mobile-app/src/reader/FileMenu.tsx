@@ -1,4 +1,5 @@
 import {
+  AppWindow,
   Archive,
   Bookmark,
   Copy,
@@ -24,6 +25,7 @@ export function FileMenu({
   packageCount,
   exporting,
   onReload,
+  onOpenInNewWindow,
   onSaveToLibrary,
   onToggleFavorite,
   onToggleReaderMode,
@@ -49,6 +51,7 @@ export function FileMenu({
   exporting: boolean
   renderFailed: boolean
   onReload?: () => Promise<boolean>
+  onOpenInNewWindow?: () => void
   onSaveToLibrary: () => void
   onToggleFavorite: () => void
   onToggleReaderMode: () => void
@@ -84,6 +87,9 @@ export function FileMenu({
       />
       {isDesktop && onReload && (
         <MenuAction icon={<RefreshCw size={18} />} label="重新加载" onClick={closeThen(() => { void onReload() })} />
+      )}
+      {isDesktop && onOpenInNewWindow && (
+        <MenuAction icon={<AppWindow size={18} />} label="在新窗口打开..." onClick={closeThen(onOpenInNewWindow)} />
       )}
       <MenuAction icon={<Copy size={18} />} label="复制全文" onClick={closeThen(onCopyText)} />
       {document.fileType === 'markdown' && readerMode === 'rendered' && !renderFailed && (

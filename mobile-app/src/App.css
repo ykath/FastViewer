@@ -3225,8 +3225,15 @@ html[data-runtime='desktop'] .directory-browser-files {
   gap: 4px;
 }
 
+html[data-runtime='desktop'] .directory-file-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+}
+
 html[data-runtime='desktop'] .directory-document,
-html[data-runtime='desktop'] .directory-browser-files > button {
+html[data-runtime='desktop'] .directory-browser-file {
   width: 100%;
   min-width: 0;
   min-height: 46px;
@@ -3243,14 +3250,14 @@ html[data-runtime='desktop'] .directory-browser-files > button {
 
 html[data-runtime='desktop'] .directory-document:hover:not(:disabled),
 html[data-runtime='desktop'] .directory-document.active,
-html[data-runtime='desktop'] .directory-browser-files > button:hover:not(:disabled),
-html[data-runtime='desktop'] .directory-browser-files > button.active {
+html[data-runtime='desktop'] .directory-browser-file:hover:not(:disabled),
+html[data-runtime='desktop'] .directory-browser-file.active {
   color: var(--accent);
   background: var(--accent-soft);
 }
 
 html[data-runtime='desktop'] .directory-document > span,
-html[data-runtime='desktop'] .directory-browser-files > button > span {
+html[data-runtime='desktop'] .directory-browser-file > span {
   min-width: 0;
   display: grid;
   gap: 2px;
@@ -3269,6 +3276,29 @@ html[data-runtime='desktop'] .directory-document small,
 html[data-runtime='desktop'] .directory-browser-files small {
   color: var(--text-muted);
   font-size: 10px;
+}
+
+html[data-runtime='desktop'] .directory-file-row > .directory-document,
+html[data-runtime='desktop'] .directory-file-row > .directory-browser-file {
+  flex: 1;
+  width: auto;
+}
+
+html[data-runtime='desktop'] .directory-new-window {
+  flex: none;
+  min-height: 32px;
+  padding: 0 8px;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 11px;
+}
+
+html[data-runtime='desktop'] .directory-new-window:hover,
+html[data-runtime='desktop'] .directory-new-window:focus-visible {
+  color: var(--accent);
+  background: var(--accent-soft);
 }
 
 html[data-runtime='desktop'] .pinned-directory-list {

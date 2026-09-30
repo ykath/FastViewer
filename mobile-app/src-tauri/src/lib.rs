@@ -3,10 +3,13 @@ use std::{
     collections::{HashMap, HashSet, VecDeque},
     env, fs,
     path::{Path, PathBuf},
-    sync::Mutex,
+    sync::{
+        atomic::{AtomicU64, Ordering},
+        Mutex,
+    },
     time::UNIX_EPOCH,
 };
-use tauri::{Emitter, Manager};
+use tauri::{Emitter, Manager, PhysicalPosition, WebviewUrl, WebviewWindowBuilder};
 use tauri_plugin_fs::FsExt;
 
 mod archive;
@@ -68,6 +71,147 @@ pub struct DesktopDirectoryListing {
 
 #[derive(Default)]
 struct PendingOpenRequests(Mutex<VecDeque<DesktopOpenRequest>>);
+
+#[derive(Default)]
+struct WindowDocuments(Mutex<HashMap<String, String>>);
+
+static READER_WINDOW_SEQ: AtomicU64 = AtomicU64::new(1);
+
+fn normalize_document_key(path: &str) -> String {
+    path.replace('\\', "/").trim_end_matches('/').to_lowercase()
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum AssociationAction {
+    Focus(String),
+    OpenNew,
+}
+
+fn association_action(documents: &HashMap<String, String>, path: &str) -> AssociationAction {
+    let key = normalize_document_key(path);
+    documents
+        .iter()
+        .find_map(|(label, open_path)| {
+            (!open_path.is_empty() && normalize_document_key(open_path) == key).then(|| label.clone())
+        })
+        .map_or(AssociationAction::OpenNew, AssociationAction::Focus)
+}
+
+fn split_launch_requests<T>(mut requests: Vec<T>) -> (Vec<T>, Vec<T>) {
+    if requests.is_empty() {
+        return (Vec::new(), Vec::new());
+    }
+    let extras = requests.split_off(1);
+    (requests, extras)
+}
+
+fn focus_webview_window(window: &tauri::WebviewWindow) {
+    let _ = window.unminimize();
+    let _ = window.show();
+    let _ = window.set_focus();
+}
+
+fn enqueue_open_request(app: &tauri::AppHandle, request: DesktopOpenRequest) -> bool {
+    let state = app.state::<PendingOpenRequests>();
+    let Ok(mut queue) = state.0.lock() else {
+        return false;
+    };
+    queue.push_back(request);
+    true
+}
+
+fn open_reader_window_impl(
+    app: &tauri::AppHandle,
+    path: &Path,
+    request: &DesktopOpenRequest,
+) -> Result<(), String> {
+    allow_request(app, path)?;
+    let documents = app.state::<WindowDocuments>();
+    let existing_label = {
+        let guard = documents
+            .0
+            .lock()
+            .map_err(|_| "窗口文档映射不可用".to_string())?;
+        match association_action(&guard, &request.path) {
+            AssociationAction::Focus(label) => Some(label),
+            AssociationAction::OpenNew => None,
+        }
+    };
+    if let Some(label) = existing_label {
+        if let Some(window) = app.get_webview_window(&label) {
+            focus_webview_window(&window);
+            return Ok(());
+        }
+        if let Ok(mut guard) = documents.0.lock() {
+            guard.remove(&label);
+        }
+    }
+
+    let label = {
+        let windows = app.webview_windows();
+        loop {
+            let candidate = format!("reader-{}", READER_WINDOW_SEQ.fetch_add(1, Ordering::Relaxed));
+            if !windows.contains_key(&candidate) {
+                break candidate;
+            }
+        }
+    };
+    let script = format!(
+        "globalThis.__LIGHTPAGE_DOCUMENT_PATH__ = {};",
+        serde_json::to_string(&request.path).map_err(|error| format!("无法编码文件路径：{error}"))?
+    );
+    let reader_count = app
+        .webview_windows()
+        .keys()
+        .filter(|existing| existing.starts_with("reader-"))
+        .count()
+        + 1;
+    let window = WebviewWindowBuilder::new(app, &label, WebviewUrl::App("index.html".into()))
+        .title(&request.file_name)
+        .inner_size(1100.0, 760.0)
+        .min_inner_size(720.0, 520.0)
+        .resizable(true)
+        .initialization_script(script)
+        .build()
+        .map_err(|error| format!("无法创建阅读窗口：{error}"))?;
+    if let Ok(mut guard) = documents.0.lock() {
+        guard.insert(label.clone(), request.path.clone());
+    }
+    if let Some(anchor) = app.get_webview_window("main").or_else(|| {
+        app.webview_windows()
+            .into_values()
+            .find(|candidate| candidate.label() != label)
+    }) {
+        if let Ok(position) = anchor.outer_position() {
+            let offset = 28 * reader_count as i32;
+            let _ = window.set_position(PhysicalPosition::new(position.x + offset, position.y + offset));
+        }
+    }
+    focus_webview_window(&window);
+    Ok(())
+}
+
+fn open_association_requests(app: tauri::AppHandle, requests: Vec<(PathBuf, DesktopOpenRequest)>) {
+    // WebView2 deadlocks if a window is created on the single-instance callback thread.
+    std::thread::spawn(move || {
+        let mut queued = false;
+        for (path, request) in requests {
+            if allow_request(&app, &path).is_err() {
+                continue;
+            }
+            if open_reader_window_impl(&app, &path, &request).is_err() && enqueue_open_request(&app, request)
+            {
+                queued = true;
+            }
+        }
+        if queued {
+            if let Some(window) = app.get_webview_window("main") {
+                focus_webview_window(&window);
+            }
+            let _ = app.emit("desktop-open-requested", ());
+        }
+    });
+}
 
 fn validate_source(source: &str) -> Result<&str, String> {
     match source {
@@ -349,38 +493,71 @@ fn list_directory_documents(path: String) -> Result<DesktopDirectoryListing, Str
     list_directory_documents_impl(path)
 }
 
+#[tauri::command]
+async fn open_reader_window(app: tauri::AppHandle, path: String) -> Result<(), String> {
+    let (canonical, request) = validate_open_path(path, "picker")?;
+    open_reader_window_impl(&app, &canonical, &request)
+}
+
+#[tauri::command]
+fn set_window_document(
+    window: tauri::WebviewWindow,
+    state: tauri::State<'_, WindowDocuments>,
+    path: Option<String>,
+    title: String,
+) -> Result<(), String> {
+    let _ = window.set_title(&title);
+    let mut documents = state
+        .0
+        .lock()
+        .map_err(|_| "窗口文档映射不可用".to_string())?;
+    let label = window.label().to_string();
+    match path {
+        Some(path) if !path.is_empty() => {
+            documents.insert(label, path);
+        }
+        _ => {
+            documents.insert(label, String::new());
+        }
+    }
+    Ok(())
+}
+
+#[tauri::command]
+fn current_window_document(
+    window: tauri::WebviewWindow,
+    state: tauri::State<'_, WindowDocuments>,
+) -> Result<Option<String>, String> {
+    let documents = state
+        .0
+        .lock()
+        .map_err(|_| "窗口文档映射不可用".to_string())?;
+    Ok(documents.get(window.label()).cloned())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let builder = tauri::Builder::default()
         .plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {
-            let mut queued = false;
-            for (path, request) in requests_from_args(args.into_iter().skip(1), "association") {
-                if allow_request(app, &path).is_ok() {
-                    let state = app.state::<PendingOpenRequests>();
-                    if let Ok(mut queue) = state.0.lock() {
-                        queue.push_back(request);
-                        queued = true;
-                    };
+            let requests = requests_from_args(args.into_iter().skip(1), "association");
+            if requests.is_empty() {
+                if let Some(window) = app.get_webview_window("main") {
+                    focus_webview_window(&window);
                 }
+                return;
             }
-
-            if let Some(window) = app.get_webview_window("main") {
-                let _ = window.unminimize();
-                let _ = window.show();
-                let _ = window.set_focus();
-            }
-
-            // The queue is the source of truth. The event only wakes the frontend, so
-            // a temporarily unavailable WebView cannot lose an association request.
-            if queued {
-                let _ = app.emit("desktop-open-requested", ());
-            }
+            open_association_requests(app.clone(), requests);
         }))
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
-        .plugin(tauri_plugin_window_state::Builder::default().build())
+        .plugin(
+            tauri_plugin_window_state::Builder::default()
+                .with_filter(|label| label == "main")
+                .build(),
+        )
         .manage(PendingOpenRequests::default())
+        .manage(WindowDocuments::default())
         .manage(DesktopWorkspaceState::default())
         .manage(ArchiveImportState::default())
         .setup(|app| {
@@ -390,11 +567,19 @@ pub fn run() {
                     .map(|value| value.to_string_lossy().into_owned()),
                 "launch",
             );
-            let state = app.state::<PendingOpenRequests>();
-            let mut queue = state.0.lock().map_err(|_| "打开文件队列不可用")?;
-            for (path, request) in requests {
-                if allow_request(app.handle(), &path).is_ok() {
-                    queue.push_back(request);
+            let allowed = requests
+                .into_iter()
+                .filter(|(path, _)| allow_request(app.handle(), path).is_ok())
+                .collect::<Vec<_>>();
+            let (main_requests, extra_requests) = split_launch_requests(allowed);
+            {
+                let state = app.state::<PendingOpenRequests>();
+                let mut queue = state.0.lock().map_err(|_| "打开文件队列不可用")?;
+                queue.extend(main_requests.into_iter().map(|(_, request)| request));
+            }
+            for (path, request) in extra_requests {
+                if open_reader_window_impl(app.handle(), &path, &request).is_err() {
+                    let _ = enqueue_open_request(app.handle(), request);
                 }
             }
             Ok(())
@@ -405,6 +590,9 @@ pub fn run() {
             take_pending_open_requests,
             classify_drop_paths,
             list_directory_documents,
+            open_reader_window,
+            set_window_document,
+            current_window_document,
             register_workspace,
             restore_workspaces,
             remove_workspace,
@@ -576,5 +764,30 @@ mod tests {
         assert_eq!(names, vec!["a.md", "B.html"]);
 
         fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn same_path_focuses_the_existing_window() {
+        let mut documents = HashMap::new();
+        documents.insert("main".to_string(), r"C:\Docs\Notes.MD".to_string());
+        documents.insert("reader-1".to_string(), String::new());
+        assert_eq!(
+            association_action(&documents, "C:/docs/notes.md"),
+            AssociationAction::Focus("main".to_string())
+        );
+        assert_eq!(
+            association_action(&documents, "C:/docs/other.md"),
+            AssociationAction::OpenNew
+        );
+    }
+
+    #[test]
+    fn launch_keeps_only_the_first_file_on_the_main_window() {
+        let (main, extras) = split_launch_requests(vec!["a.md", "b.md", "c.md"]);
+        assert_eq!(main, vec!["a.md"]);
+        assert_eq!(extras, vec!["b.md", "c.md"]);
+        let (empty_main, empty_extras) = split_launch_requests::<String>(Vec::new());
+        assert!(empty_main.is_empty());
+        assert!(empty_extras.is_empty());
     }
 }

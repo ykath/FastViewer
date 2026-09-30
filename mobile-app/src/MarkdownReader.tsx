@@ -31,7 +31,7 @@ type MarkdownReaderProps = {
   contentRef: React.RefObject<HTMLElement | null>
   themeMode: ThemeMode
   onOpenExternalLink?: (url: string) => void
-  onOpenDocumentLink?: (href: string) => void
+  onOpenDocumentLink?: (href: string, options?: { newWindow?: boolean }) => void
   searchQuery?: string
   forceHeadingId?: string
   renderAll?: boolean
@@ -101,7 +101,7 @@ function MarkdownReader({ content, documentPath, resources, contentRef, themeMod
       themeMode,
       headingCountsRef,
       (url) => externalLinkRef.current?.(url),
-      (href) => documentLinkRef.current?.(href),
+      (href, options) => documentLinkRef.current?.(href, options),
       renderAll,
     ),
   /* eslint-enable react-hooks/refs */
@@ -180,7 +180,7 @@ function createMarkdownComponents(
   themeMode: ThemeMode,
   headingCountsRef: { current: Map<string, number> },
   onOpenExternalLink?: (url: string) => void,
-  onOpenDocumentLink?: (href: string) => void,
+  onOpenDocumentLink?: (href: string, options?: { newWindow?: boolean }) => void,
   eagerMermaid = false,
 ): Components {
   const documentDir = dirname(documentPath ?? '')
@@ -236,7 +236,7 @@ function createMarkdownComponents(
             }
             if (documentLink && onOpenDocumentLink) {
               event.preventDefault()
-              onOpenDocumentLink(href ?? '')
+              onOpenDocumentLink(href ?? '', { newWindow: event.ctrlKey || event.metaKey })
             }
           }}
         >
@@ -296,7 +296,7 @@ const ProgressiveBlock = memo(function ProgressiveBlock({
   resources?: Record<string, string>
   themeMode: ThemeMode
   onOpenExternalLink?: (url: string) => void
-  onOpenDocumentLink?: (href: string) => void
+  onOpenDocumentLink?: (href: string, options?: { newWindow?: boolean }) => void
   onRenderChange?: () => void
 }) {
   const hostRef = useRef<HTMLDivElement>(null)
@@ -317,7 +317,7 @@ const ProgressiveBlock = memo(function ProgressiveBlock({
       themeMode,
       headingCountsRef,
       (url) => externalLinkRef.current?.(url),
-      (href) => documentLinkRef.current?.(href),
+      (href, options) => documentLinkRef.current?.(href, options),
       eagerMermaid,
     ),
     /* eslint-enable react-hooks/refs */

@@ -235,11 +235,12 @@ export function BottomNav({ currentView, hasReader, pinnedDirectories, activeDir
   )
 }
 
-export function DirectoryBrowserPopover({ listing, activeDocumentPath, sortMode, onOpen, onClose, onSortModeChange }: {
+export function DirectoryBrowserPopover({ listing, activeDocumentPath, sortMode, onOpen, onOpenInNewWindow, onClose, onSortModeChange }: {
   listing: DesktopDirectoryListing
   activeDocumentPath?: string
   sortMode: DirectorySortMode
   onOpen: (path: string) => void
+  onOpenInNewWindow?: (path: string) => void
   onClose: () => void
   onSortModeChange: (mode: DirectorySortMode) => void
 }) {
@@ -257,10 +258,17 @@ export function DirectoryBrowserPopover({ listing, activeDocumentPath, sortMode,
         {sortedFiles.map((file) => {
           const selected = file.path.replace(/\\/g, '/').toLocaleLowerCase() === activePath
           return (
-            <button key={file.path} type="button" className={selected ? 'active' : ''} disabled={selected} title={file.path} onClick={() => onOpen(file.path)}>
-              <FileText size={16} />
-              <span><strong>{file.fileName}</strong><small>{directoryFileDetails(file)}</small></span>
-            </button>
+            <div key={file.path} className="directory-file-row">
+              <button type="button" className={`directory-browser-file${selected ? ' active' : ''}`} disabled={selected} title={file.path} onClick={() => onOpen(file.path)}>
+                <FileText size={16} />
+                <span><strong>{file.fileName}</strong><small>{directoryFileDetails(file)}</small></span>
+              </button>
+              {onOpenInNewWindow && (
+                <button className="directory-new-window" type="button" aria-label={`在新窗口打开 ${file.fileName}`} onClick={() => onOpenInNewWindow(file.path)}>
+                  新窗口
+                </button>
+              )}
+            </div>
           )
         })}
       </div>

@@ -7,7 +7,7 @@ import { finishPerformanceSpan, startPerformanceSpan } from './performance-metri
 import { decodeDocumentBytes } from './decode-document'
 import { nextThemePreference } from './reader-settings'
 import type { ThemeMode } from './reader-settings'
-import { desktopDocumentId, desktopPlatform } from './desktop-platform'
+import { desktopDocumentId, desktopPlatform, splitDroppedDocuments } from './desktop-platform'
 import type { DesktopDirectoryListing, DesktopOpenRequest } from './desktop-platform'
 import { isDirectoryPinned, loadPinnedDirectories, normalizeDirectoryPath, pinDirectory, savePinnedDirectories, unpinDirectory } from './desktop-directories'
 import { ensureLibraryIndex, setLibraryIndexEnabled } from './search/library-index'
@@ -81,6 +81,7 @@ function App() {
   const [linkNavigationHeadingId, setLinkNavigationHeadingId] = useState<string | null>(null)
   const [pendingSearchQuery, setPendingSearchQuery] = useState<string | null>(null)
   const [searchIndexBytes, setSearchIndexBytes] = useState(0)
+  const [windowDocumentReady, setWindowDocumentReady] = useState(() => !desktopPlatform.isDesktop())
   const fileInputRef = useRef<HTMLInputElement>(null)
   const archiveCleanupStartedRef = useRef(false)
   const openQueueRunningRef = useRef(false)
@@ -94,6 +95,7 @@ function App() {
   const desktopRefreshPendingRef = useRef(new Map<string, 'auto' | 'manual'>())
   const desktopRevisionRef = useRef(new Map<string, string>())
   const lastDropRef = useRef({ signature: '', receivedAt: 0, processing: false })
+  const hasOpenDesktopDocumentRef = useRef(false)
   const isDesktop = desktopPlatform.isDesktop()
 
   const activeDocument = documents.find((doc) => doc.id === activeDocumentId) ?? documents[0]
@@ -104,7 +106,8 @@ function App() {
     activeDocumentIdRef.current = activeDocumentId
     viewRef.current = view
     documentsRef.current = documents
-  }, [activeDocumentId, documents, view])
+    hasOpenDesktopDocumentRef.current = isDesktop && view === 'reader' && Boolean(activeDocument)
+  }, [activeDocument, activeDocumentId, documents, isDesktop, view])
 
   useEffect(() => {
     const media = window.matchMedia?.('(prefers-color-scheme: dark)')
@@ -745,7 +748,11 @@ function App() {
     let disposed = false
     let unlisten: (() => void) | undefined
 
-    void desktopPlatform.listenForOpenRequests(importDesktopRequest).then((removeListener) => {
+    void desktopPlatform.currentWindowLabel().then((label) => {
+      if (disposed || label !== 'main') return undefined
+      return desktopPlatform.listenForOpenRequests(importDesktopRequest)
+    }).then((removeListener) => {
+      if (!removeListener) return
       if (disposed) {
         removeListener()
         return
@@ -762,6 +769,42 @@ function App() {
     // The desktop bridge owns event serialization and is initialized once per app mount.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [documentsHydrated, isDesktop])
+
+  useEffect(() => {
+    if (!isDesktop || !documentsHydrated) return undefined
+    let disposed = false
+    void (async () => {
+      try {
+        const label = await desktopPlatform.currentWindowLabel()
+        if (disposed || label === 'main') return
+        const recorded = await desktopPlatform.currentWindowDocument()
+        if (disposed || recorded === '') return
+        const path = recorded || desktopPlatform.bootDocumentPath()
+        if (!path) return
+        const request = await desktopPlatform.prepareDocument(path, 'launch')
+        if (!disposed) await importDesktopRequest(request)
+      } catch (error) {
+        if (!disposed) {
+          await desktopPlatform.setWindowDocument(null, '轻页').catch(() => undefined)
+          showError('UNKNOWN', error instanceof Error ? error.message : '新窗口打开文件失败')
+        }
+      } finally {
+        if (!disposed) setWindowDocumentReady(true)
+      }
+    })()
+    return () => {
+      disposed = true
+    }
+    // Reader windows import their launch path once, after the document library is ready.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [documentsHydrated, isDesktop])
+
+  useEffect(() => {
+    if (!isDesktop || !windowDocumentReady) return
+    const path = view === 'reader' && activeDocument?.sourceUri ? activeDocument.sourceUri : null
+    const title = path ? activeDocument?.fileName || '轻页' : '轻页'
+    void desktopPlatform.setWindowDocument(path, title).catch(() => undefined)
+  }, [activeDocument?.fileName, activeDocument?.sourceUri, isDesktop, view, windowDocumentReady])
 
   const handlePickedFile = async (file: File) => {
     const startedAt = startPerformanceSpan()
@@ -840,6 +883,24 @@ function App() {
       const message = error instanceof Error ? error.message : '文件选择失败'
       if (/cancel/i.test(message)) setView('home')
       else showError('UNKNOWN', message)
+    }
+  }
+
+  const openFileInNewWindow = async () => {
+    if (!isDesktop) return
+    try {
+      const request = await desktopPlatform.pickDocument()
+      if (request) await desktopPlatform.openInNewWindow(request.path)
+    } catch (error) {
+      showError('UNKNOWN', error instanceof Error ? error.message : '无法在新窗口打开文件')
+    }
+  }
+
+  const openDirectoryInNewWindow = async (path: string) => {
+    try {
+      await desktopPlatform.openInNewWindow(path)
+    } catch (error) {
+      showToast(error instanceof Error ? error.message : '无法在新窗口打开文件', 'warning')
     }
   }
 
@@ -1108,6 +1169,7 @@ function App() {
 
   const desktopCommands: DesktopCommand[] = [
     { id: 'file.open', title: '打开文件', keywords: ['open'], shortcut: 'Ctrl+O', run: () => openFilePicker() },
+    { id: 'file.open-window', title: '在新窗口打开文件', keywords: ['window', 'new', '新窗口'], shortcut: 'Ctrl+Shift+O', run: () => openFileInNewWindow() },
     { id: 'document.reload', title: '重新加载当前文件', keywords: ['reload', 'refresh', '同步'], shortcut: 'Ctrl+R', enabled: () => view === 'reader' && Boolean(activeDocument?.sourceUri), run: () => activeDocument ? refreshDesktopDocument(activeDocument.id, 'manual') : undefined },
     { id: 'directory.pin', title: currentDirectory && isDirectoryPinned(pinnedDirectories, currentDirectory.path) ? '取消固定当前目录' : '固定当前目录', keywords: ['folder', 'directory'], enabled: () => Boolean(currentDirectory), run: toggleCurrentDirectoryPin },
     { id: 'document.find', title: '在当前文档中查找', keywords: ['search'], shortcut: 'Ctrl+F', enabled: () => view === 'reader', run: () => dispatchReaderCommand('find') },
@@ -1158,8 +1220,15 @@ function App() {
       try {
         const classified = await desktopPlatform.classifyDropPaths(paths)
         if (disposed) return
-        if (classified.files[0]) await importDesktopRequest(classified.files[0])
-        if (classified.files.length > 1) showToast(`已打开首个文件，忽略其余 ${classified.files.length - 1} 个文件`, 'warning')
+        const dropped = splitDroppedDocuments(classified.files, hasOpenDesktopDocumentRef.current)
+        if (dropped.current) await importDesktopRequest(dropped.current)
+        for (const file of dropped.extra) {
+          try {
+            await desktopPlatform.openInNewWindow(file.path)
+          } catch (error) {
+            showToast(error instanceof Error ? error.message : `无法在新窗口打开 ${file.fileName}`, 'warning')
+          }
+        }
         if (classified.directories.length > 0) showToast('请先打开目录内的文档，再从左侧固定该目录', 'warning')
         if (classified.message) showToast(classified.message, 'warning')
         else if (classified.rejected) showToast(`${classified.rejected} 个项目不受支持或无法访问`, 'warning')
@@ -1374,6 +1443,8 @@ function App() {
               void openDocument(item, { preserveBackStack: true })
             }}
             onOpenDesktopDocument={(path, options) => { void openDirectoryDocument(path, options) }}
+            onOpenDesktopDocumentInNewWindow={(path) => { void openDirectoryInNewWindow(path) }}
+            onOpenFileInNewWindow={() => { void openFileInNewWindow() }}
             linkNavigationHeadingId={linkNavigationHeadingId}
             onConsumeLinkNavigationHeading={() => setLinkNavigationHeadingId(null)}
             pendingSearchQuery={pendingSearchQuery}
@@ -1383,6 +1454,7 @@ function App() {
             directoryPinned={Boolean(currentDirectory && isDirectoryPinned(pinnedDirectories, currentDirectory.path))}
             onToggleDirectoryPin={toggleCurrentDirectoryPin}
             onOpenDirectoryDocument={(path) => { void openDirectoryDocument(path) }}
+            onOpenDirectoryDocumentInNewWindow={(path) => { void openDirectoryInNewWindow(path) }}
             onDirectorySortModeChange={setDirectorySortMode}
           />
         )}
@@ -1449,6 +1521,7 @@ function App() {
           activeDocumentPath={activeDocument?.sourceUri}
           sortMode={directorySortMode}
           onOpen={(path) => { void openDirectoryDocument(path) }}
+          onOpenInNewWindow={(path) => { void openDirectoryInNewWindow(path) }}
           onClose={() => setDirectoryBrowser(null)}
           onSortModeChange={setDirectorySortMode}
         />

@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { describe, expect, it, vi } from 'vitest'
-import { createDesktopPlatform, desktopDocumentId, extractLocalMarkdownImageSources } from './desktop-platform'
+import { createDesktopPlatform, desktopDocumentId, extractLocalMarkdownImageSources, splitDroppedDocuments } from './desktop-platform'
 import type { DesktopOpenRequest, DesktopPlatformDependencies } from './desktop-platform'
 
 function createDependencies(overrides: Partial<DesktopPlatformDependencies> = {}): DesktopPlatformDependencies {
@@ -26,6 +26,26 @@ function createDependencies(overrides: Partial<DesktopPlatformDependencies> = {}
     ...overrides,
   }
 }
+
+describe('splitDroppedDocuments', () => {
+  it('keeps the first drop in the current window when nothing is open', () => {
+    expect(splitDroppedDocuments(['a.md', 'b.md'], false)).toEqual({
+      current: 'a.md',
+      extra: ['b.md'],
+    })
+  })
+
+  it('sends every drop to a new window when a document is already open', () => {
+    expect(splitDroppedDocuments(['a.md', 'b.md'], true)).toEqual({
+      current: null,
+      extra: ['a.md', 'b.md'],
+    })
+  })
+
+  it('returns an empty split for no files', () => {
+    expect(splitDroppedDocuments([], true)).toEqual({ current: null, extra: [] })
+  })
+})
 
 describe('desktop platform adapter', () => {
   it('marks desktop and web runtimes without invoking native APIs', () => {
