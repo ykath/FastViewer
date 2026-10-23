@@ -6,31 +6,31 @@
 
 ## 当前版本状态
 
-轻页的 Windows 与 Android 版本已统一：
+轻页的 Windows 与 Android 源码版本均为 1.6.2，公开安装包按平台发布：
 
 | 平台 | 当前源码版本 | 最新公开 Release | 说明 |
 | --- | --- | --- | --- |
-| Windows x64 | **1.6.2** | **v1.6.1** | 1.6.2 开发中；公开版提供未签名的安装版和便携版 |
-| Android | **1.6.2**（`versionCode 12`） | **v1.6.1** | 1.6.2 开发中；公开版提供正式证书签名 APK |
+| Windows x64 | **1.6.2** | **v1.6.2** | 提供未签名的安装版和便携版 |
+| Android | **1.6.2**（`versionCode 12`） | **v1.6.1** | 1.6.2 APK 尚未发布；公开版为正式证书签名 APK |
 
-> `v1.6.1` 同时包含 Windows 与 Android 构建。从调试证书安装的旧版本升级到正式签名 APK 时，需要先卸载再安装。
+> `v1.6.2` 发布 Windows 构建；Android 请下载 `v1.6.1` 中的 APK。从调试证书安装的旧版本升级到正式签名 APK 时，需要先卸载再安装。
 
 ## 下载
 
 请从项目的 [GitHub Releases](https://github.com/ykath/FastViewer/releases) 下载，避免使用来源不明的安装文件。
 
-### Windows 1.6.1
+### Windows 1.6.2
 
 [前往最新 Release](https://github.com/ykath/FastViewer/releases/latest)：
 
-- 安装版：`LightPage_1.6.1_windows-x64-setup.exe`
-- 便携版：`LightPage_1.6.1_windows-x64.exe`
+- [安装版：LightPage_1.6.2_windows-x64-setup.exe](https://github.com/ykath/FastViewer/releases/download/v1.6.2/LightPage_1.6.2_windows-x64-setup.exe)
+- [便携版：LightPage_1.6.2_windows-x64.exe](https://github.com/ykath/FastViewer/releases/download/v1.6.2/LightPage_1.6.2_windows-x64.exe)
 
 推荐普通用户使用安装版。便携版依赖目标电脑已安装 Microsoft Edge WebView2 Runtime。
 
 ### Android 1.6.1
 
-Android 安装包与 Windows 版本一并发布：
+Android 最新公开安装包位于 [v1.6.1 Release](https://github.com/ykath/FastViewer/releases/tag/v1.6.1)：
 
 - `LightPage_1.6.1_android.apk`
 
@@ -100,14 +100,14 @@ Android 安装包与 Windows 版本一并发布：
 
 ## 版本变化
 
-### v1.6.2（开发中，尚未公开发布）
+### v1.6.2（2026-10-23，Windows 当前公开版本）
 
 - Windows 增加“双击文件打开方式”设置，默认在当前窗口打开，也可选择新窗口；设置即时生效，重启后保留。
 - 多窗口下使用最近活动的阅读窗口接收文件，并按窗口隔离打开队列，避免文件被其他窗口接收。
 - 保留文件菜单、快捷键和 Ctrl 点击文档链接等明确的新窗口操作。
 - 设置页版本号与应用版本同步。Windows 与 Android 源码版本统一为 1.6.2，Android `versionCode` 为 12。
 
-### v1.6.1（2026-09-30，当前公开版本）
+### v1.6.1（2026-09-30，Android 当前公开版本）
 
 - Windows 支持同时打开多个阅读窗口。资源管理器再次打开文件时保留当前窗口，并新建窗口显示新文件。
 - 命令面板 `Ctrl+Shift+O`、文件菜单、目录列表、首页本地文件的「新窗口」，以及按住 Ctrl 点击 Markdown 文档链接，都可以在新窗口打开。
