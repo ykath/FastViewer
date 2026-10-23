@@ -28,6 +28,7 @@ export type DesktopOpenRequest = {
 }
 
 export type WorkspaceRegistration = Pick<WorkspaceRecord, 'id' | 'name' | 'rootPath' | 'exclusions'>
+export type ExternalOpenMode = 'currentWindow' | 'newWindow'
 export type DesktopDropClassification = { files: DesktopOpenRequest[]; directories: string[]; rejected: number; message?: string }
 
 export type DesktopDirectoryDocument = {
@@ -440,6 +441,16 @@ export function createDesktopPlatform(dependencies: DesktopPlatformDependencies 
     async openInNewWindow(path: string): Promise<void> {
       if (!isDesktop()) return
       await dependencies.invoke<void>('open_reader_window', { path })
+    },
+
+    async getExternalOpenMode(): Promise<ExternalOpenMode> {
+      if (!isDesktop()) return 'currentWindow'
+      return dependencies.invoke<ExternalOpenMode>('get_external_open_mode')
+    },
+
+    async setExternalOpenMode(mode: ExternalOpenMode): Promise<void> {
+      if (!isDesktop()) return
+      await dependencies.invoke<void>('set_external_open_mode', { mode })
     },
 
     async setWindowDocument(path: string | null, title: string): Promise<void> {

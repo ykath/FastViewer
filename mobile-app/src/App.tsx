@@ -744,14 +744,13 @@ function App() {
     // finished. Otherwise the later hydration result can replace the document
     // that was just opened from Explorer, making a successful double-click look
     // like it was ignored.
-    if (!isDesktop || !documentsHydrated) return undefined
+    // Reader windows also drain their own queue, after their initial document
+    // finishes opening so it cannot overwrite a newer association request.
+    if (!isDesktop || !documentsHydrated || !windowDocumentReady) return undefined
     let disposed = false
     let unlisten: (() => void) | undefined
 
-    void desktopPlatform.currentWindowLabel().then((label) => {
-      if (disposed || label !== 'main') return undefined
-      return desktopPlatform.listenForOpenRequests(importDesktopRequest)
-    }).then((removeListener) => {
+    void desktopPlatform.listenForOpenRequests(importDesktopRequest).then((removeListener) => {
       if (!removeListener) return
       if (disposed) {
         removeListener()
@@ -768,7 +767,7 @@ function App() {
     }
     // The desktop bridge owns event serialization and is initialized once per app mount.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [documentsHydrated, isDesktop])
+  }, [documentsHydrated, isDesktop, windowDocumentReady])
 
   useEffect(() => {
     if (!isDesktop || !documentsHydrated) return undefined

@@ -12,6 +12,8 @@ import type { ReaderSettings, ThemeMode } from './reader-settings'
 import { clearNativeRegenerableCache, formatStorageBytes, getNativeStorageStatus } from './native-storage'
 import type { NativeStorageStatus } from './native-storage'
 import { desktopPlatform } from './desktop-platform'
+import type { ExternalOpenMode } from './desktop-platform'
+import { version } from '../package.json'
 
 type Props = {
   settings: ReaderSettings
@@ -27,8 +29,29 @@ export default function SettingsPage({ settings, resolvedTheme, onSetSettings, s
   const [storageStatus, setStorageStatus] = useState<NativeStorageStatus | null>(null)
   const [clearingStorage, setClearingStorage] = useState(false)
   const [htmlOpenWith, setHtmlOpenWith] = useState(settings.desktopHtmlOpenWith)
+  const [externalOpenMode, setExternalOpenMode] = useState<ExternalOpenMode>('currentWindow')
+  const [openModeReady, setOpenModeReady] = useState(false)
+  const [savingOpenMode, setSavingOpenMode] = useState(false)
+  const [openModeError, setOpenModeError] = useState('')
   const isDesktop = desktopPlatform.isDesktop()
   const performanceMetrics = readPerformanceMetrics().slice(-20).reverse()
+  useEffect(() => {
+    if (!isDesktop) return
+    let disposed = false
+    const refresh = () => {
+      void desktopPlatform.getExternalOpenMode().then((mode) => {
+        if (disposed) return
+        setExternalOpenMode(mode)
+        setOpenModeReady(true)
+        setOpenModeError('')
+      }).catch(() => {
+        if (!disposed) setOpenModeError('无法读取打开方式，请重新进入设置重试。')
+      })
+    }
+    refresh()
+    window.addEventListener('focus', refresh)
+    return () => { disposed = true; window.removeEventListener('focus', refresh) }
+  }, [isDesktop])
   useEffect(() => {
     if (infoSheet !== 'storage') return
     void getNativeStorageStatus().then(setStorageStatus).catch(() => setStorageStatus(null))
@@ -68,12 +91,21 @@ export default function SettingsPage({ settings, resolvedTheme, onSetSettings, s
           })
         }} />}
         {isDesktop && <SettingRow icon={<BookOpen size={19} />} title="Windows 最近文档" description="将成功打开的本地文件加入系统最近文档" value={settings.desktopRecentDocuments ? '开启' : '关闭'} onClick={() => onSetSettings({ ...settings, desktopRecentDocuments: !settings.desktopRecentDocuments })} />}
+        {isDesktop && <SettingRow icon={<BookOpen size={19} />} title="双击文件打开方式" description="从资源管理器打开文件时，使用最近活动的阅读窗口或新建窗口；默认使用当前窗口" value={!openModeReady ? '读取中…' : savingOpenMode ? '保存中…' : externalOpenMode === 'newWindow' ? '新窗口' : '当前窗口'} disabled={!openModeReady || savingOpenMode} onClick={() => {
+          const mode = externalOpenMode === 'currentWindow' ? 'newWindow' : 'currentWindow'
+          setSavingOpenMode(true)
+          setOpenModeError('')
+          void desktopPlatform.setExternalOpenMode(mode).then(() => setExternalOpenMode(mode)).catch(() => {
+            setOpenModeError('保存失败，打开方式未更改，请重试。')
+          }).finally(() => setSavingOpenMode(false))
+        }} />}
+        {isDesktop && openModeError && <p role="alert">{openModeError}</p>}
         <SettingRow icon={<Search size={19} />} title="全文搜索" description="在文件库和固定目录中搜索正文" value={settings.librarySearchEnabled === false ? '关闭' : '开启'} onClick={() => onSetSettings({ ...settings, librarySearchEnabled: settings.librarySearchEnabled === false })} />
         <SettingRow icon={<Search size={19} />} title="全文索引" description="查看占用、重建或清理本地正文索引" value={formatStorageBytes(searchIndexBytes)} onClick={() => setInfoSheet('search')} />
         <SettingRow icon={<BookOpen size={19} />} title="使用帮助" description="文件打开、安全权限与导出说明" value="查看" onClick={() => setInfoSheet('help')} />
         <SettingRow icon={<ShieldCheck size={19} />} title="隐私说明" description="文档默认仅在本机处理，不自动上传" value="查看" onClick={() => setInfoSheet('privacy')} />
         <SettingRow icon={<FileCode2 size={19} />} title="性能诊断" description="仅保存在本机的最近耗时记录" value={`${performanceMetrics.length} 条`} onClick={() => setInfoSheet('performance')} />
-        <SettingRow icon={<FileCode2 size={19} />} title="版本" description="全文搜索与正式签名版本" value="1.6.0" />
+        <SettingRow icon={<FileCode2 size={19} />} title="版本" description="轻页 Markdown / HTML 阅读器" value={version} />
       </section>
       {infoSheet === 'search' && (
         <Sheet title="全文索引" onClose={() => setInfoSheet(null)}>
@@ -115,9 +147,9 @@ export default function SettingsPage({ settings, resolvedTheme, onSetSettings, s
   )
 }
 
-function SettingRow({ icon, title, description, value, onClick }: { icon: ReactNode; title: string; description: string; value: string; onClick?: () => void }) {
+function SettingRow({ icon, title, description, value, onClick, disabled }: { icon: ReactNode; title: string; description: string; value: string; onClick?: () => void; disabled?: boolean }) {
   const Component = onClick ? 'button' : 'div'
-  return <Component className="setting-row" type={onClick ? 'button' : undefined} onClick={onClick}><span className="setting-icon">{icon}</span><span className="setting-copy"><span className="setting-title">{title}</span><span className="setting-description">{description}</span></span><span className="setting-value">{value}</span></Component>
+  return <Component className="setting-row" type={onClick ? 'button' : undefined} onClick={onClick} disabled={onClick ? disabled : undefined}><span className="setting-icon">{icon}</span><span className="setting-copy"><span className="setting-title">{title}</span><span className="setting-description">{description}</span></span><span className="setting-value">{value}</span></Component>
 }
 
 function InfoSheet({ title, children, onClose }: { title: string; children: ReactNode; onClose: () => void }) {

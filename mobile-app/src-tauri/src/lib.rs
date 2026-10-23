@@ -13,10 +13,14 @@ use tauri::{Emitter, Manager, PhysicalPosition, WebviewUrl, WebviewWindowBuilder
 use tauri_plugin_fs::FsExt;
 
 mod archive;
+mod open_preferences;
 mod system_integration;
 mod workspace;
 
 use archive::{cancel_zip_import, import_zip_archive, remove_zip_archive, ArchiveImportState};
+use open_preferences::{
+    get_external_open_mode, set_external_open_mode, ExternalOpenMode, OpenPreferences,
+};
 use system_integration::{add_recent_document, get_html_open_with, set_html_open_with};
 use workspace::{
     cancel_workspace_index, get_document_revision, list_workspace_children, prepare_workspace_open,
@@ -70,7 +74,10 @@ pub struct DesktopDirectoryListing {
 }
 
 #[derive(Default)]
-struct PendingOpenRequests(Mutex<VecDeque<DesktopOpenRequest>>);
+struct PendingOpenRequests(Mutex<HashMap<String, VecDeque<DesktopOpenRequest>>>);
+
+#[derive(Default)]
+struct LastFocusedWindow(Mutex<Option<String>>);
 
 #[derive(Default)]
 struct WindowDocuments(Mutex<HashMap<String, String>>);
@@ -92,14 +99,15 @@ fn association_action(documents: &HashMap<String, String>, path: &str) -> Associ
     documents
         .iter()
         .find_map(|(label, open_path)| {
-            (!open_path.is_empty() && normalize_document_key(open_path) == key).then(|| label.clone())
+            (!open_path.is_empty() && normalize_document_key(open_path) == key)
+                .then(|| label.clone())
         })
         .map_or(AssociationAction::OpenNew, AssociationAction::Focus)
 }
 
-fn split_launch_requests<T>(mut requests: Vec<T>) -> (Vec<T>, Vec<T>) {
-    if requests.is_empty() {
-        return (Vec::new(), Vec::new());
+fn split_launch_requests<T>(mut requests: Vec<T>, mode: ExternalOpenMode) -> (Vec<T>, Vec<T>) {
+    if requests.is_empty() || mode == ExternalOpenMode::CurrentWindow {
+        return (requests, Vec::new());
     }
     let extras = requests.split_off(1);
     (requests, extras)
@@ -134,7 +142,8 @@ fn activate_without_alt_hack(window: &tauri::WebviewWindow) {
 fn claim_foreground(window: &tauri::WebviewWindow) -> bool {
     use windows::Win32::System::Threading::{AttachThreadInput, GetCurrentThreadId};
     use windows::Win32::UI::WindowsAndMessaging::{
-        AllowSetForegroundWindow, GetForegroundWindow, GetWindowThreadProcessId, SetForegroundWindow,
+        AllowSetForegroundWindow, GetForegroundWindow, GetWindowThreadProcessId,
+        SetForegroundWindow,
     };
 
     let Ok(target) = window.hwnd() else {
@@ -163,19 +172,64 @@ fn claim_foreground(window: &tauri::WebviewWindow) -> bool {
 
 #[cfg(windows)]
 fn set_foreground_lock(lock: bool) {
-    use windows::Win32::UI::WindowsAndMessaging::{LockSetForegroundWindow, LSFW_LOCK, LSFW_UNLOCK};
+    use windows::Win32::UI::WindowsAndMessaging::{
+        LockSetForegroundWindow, LSFW_LOCK, LSFW_UNLOCK,
+    };
     unsafe {
         let _ = LockSetForegroundWindow(if lock { LSFW_LOCK } else { LSFW_UNLOCK });
     }
 }
 
 fn enqueue_open_request(app: &tauri::AppHandle, request: DesktopOpenRequest) -> bool {
+    enqueue_window_request(app, "main", request)
+}
+
+fn drain_window_requests(
+    queues: &mut HashMap<String, VecDeque<DesktopOpenRequest>>,
+    label: &str,
+) -> Vec<DesktopOpenRequest> {
+    queues
+        .remove(label)
+        .unwrap_or_default()
+        .into_iter()
+        .collect()
+}
+
+fn enqueue_window_request(
+    app: &tauri::AppHandle,
+    label: &str,
+    request: DesktopOpenRequest,
+) -> bool {
     let state = app.state::<PendingOpenRequests>();
     let Ok(mut queue) = state.0.lock() else {
         return false;
     };
-    queue.push_back(request);
+    queue
+        .entry(label.to_string())
+        .or_default()
+        .push_back(request);
     true
+}
+
+fn select_current_window(last_focused: Option<&str>, labels: &[String]) -> Option<String> {
+    last_focused
+        .filter(|label| labels.iter().any(|candidate| candidate == label))
+        .map(str::to_string)
+        .or_else(|| {
+            labels
+                .iter()
+                .find(|label| label.as_str() == "main")
+                .cloned()
+        })
+        .or_else(|| labels.iter().min().cloned())
+}
+
+fn current_reader_window(app: &tauri::AppHandle) -> Option<tauri::WebviewWindow> {
+    let state = app.state::<LastFocusedWindow>();
+    let last = state.0.lock().ok().and_then(|label| label.clone());
+    let windows = app.webview_windows();
+    let labels = windows.keys().cloned().collect::<Vec<_>>();
+    select_current_window(last.as_deref(), &labels).and_then(|label| windows.get(&label).cloned())
 }
 
 fn open_reader_window_impl(
@@ -208,7 +262,10 @@ fn open_reader_window_impl(
     let label = {
         let windows = app.webview_windows();
         loop {
-            let candidate = format!("reader-{}", READER_WINDOW_SEQ.fetch_add(1, Ordering::Relaxed));
+            let candidate = format!(
+                "reader-{}",
+                READER_WINDOW_SEQ.fetch_add(1, Ordering::Relaxed)
+            );
             if !windows.contains_key(&candidate) {
                 break candidate;
             }
@@ -216,7 +273,8 @@ fn open_reader_window_impl(
     };
     let script = format!(
         "globalThis.__LIGHTPAGE_DOCUMENT_PATH__ = {};",
-        serde_json::to_string(&request.path).map_err(|error| format!("无法编码文件路径：{error}"))?
+        serde_json::to_string(&request.path)
+            .map_err(|error| format!("无法编码文件路径：{error}"))?
     );
     let reader_count = app
         .webview_windows()
@@ -264,13 +322,18 @@ fn open_reader_window_impl(
 }
 
 fn open_association_requests(app: tauri::AppHandle, requests: Vec<(PathBuf, DesktopOpenRequest)>) {
+    let mode = app
+        .state::<OpenPreferences>()
+        .0
+        .lock()
+        .map(|mode| *mode)
+        .unwrap_or_default();
+    let target = current_reader_window(&app);
     // Runs on the UI thread inside WM_COPYDATA, while Explorer's second process
     // still owns the foreground. Take it before SendMessage returns. Creating
     // the WebView here deadlocks WebView2, so that happens after the handler.
     #[cfg(windows)]
-    let claimed = app
-        .get_webview_window("main")
-        .is_some_and(|window| claim_foreground(&window));
+    let claimed = target.as_ref().is_some_and(claim_foreground);
     #[cfg(windows)]
     if claimed {
         set_foreground_lock(true);
@@ -279,19 +342,28 @@ fn open_association_requests(app: tauri::AppHandle, requests: Vec<(PathBuf, Desk
         std::thread::sleep(std::time::Duration::from_millis(100));
         #[cfg(windows)]
         set_foreground_lock(false);
-        let mut queued = false;
         for (path, request) in requests {
             if allow_request(&app, &path).is_err() {
                 continue;
             }
-            if open_reader_window_impl(&app, &path, &request).is_err()
-                && enqueue_open_request(&app, request)
+            if mode == ExternalOpenMode::NewWindow
+                && open_reader_window_impl(&app, &path, &request).is_ok()
             {
-                queued = true;
+                continue;
             }
-        }
-        if queued {
-            let _ = app.emit("desktop-open-requested", ());
+            // Re-resolve if the selected window was closed during launch.
+            let window = target
+                .as_ref()
+                .and_then(|window| app.get_webview_window(window.label()))
+                .or_else(|| current_reader_window(&app));
+            if let Some(window) = window {
+                if enqueue_window_request(&app, window.label(), request) {
+                    let _ = app.emit_to(window.label(), "desktop-open-requested", ());
+                    present_webview_window(&window);
+                }
+            } else {
+                let _ = open_reader_window_impl(&app, &path, &request);
+            }
         }
     });
 }
@@ -391,10 +463,8 @@ fn resolve_relative_resource_paths(
             .and_then(|value| value.to_str())
             .map(str::to_ascii_lowercase);
         let extension = extension.as_deref();
-        let is_image = extension
-            .is_some_and(|value| SUPPORTED_IMAGE_EXTENSIONS.contains(&value));
-        let is_video = extension
-            .is_some_and(|value| SUPPORTED_VIDEO_EXTENSIONS.contains(&value));
+        let is_image = extension.is_some_and(|value| SUPPORTED_IMAGE_EXTENSIONS.contains(&value));
+        let is_video = extension.is_some_and(|value| SUPPORTED_VIDEO_EXTENSIONS.contains(&value));
         if !is_image && !is_video {
             continue;
         }
@@ -465,13 +535,14 @@ fn resolve_relative_resources(
 
 #[tauri::command]
 fn take_pending_open_requests(
+    window: tauri::WebviewWindow,
     state: tauri::State<'_, PendingOpenRequests>,
 ) -> Result<Vec<DesktopOpenRequest>, String> {
     let mut queue = state
         .0
         .lock()
         .map_err(|_| "打开文件队列不可用".to_string())?;
-    Ok(queue.drain(..).collect())
+    Ok(drain_window_requests(&mut queue, window.label()))
 }
 
 #[tauri::command]
@@ -644,10 +715,18 @@ pub fn run() {
                 .build(),
         )
         .manage(PendingOpenRequests::default())
+        .manage(OpenPreferences::default())
+        .manage(LastFocusedWindow::default())
         .manage(WindowDocuments::default())
         .manage(DesktopWorkspaceState::default())
         .manage(ArchiveImportState::default())
         .setup(|app| {
+            let config = app.path().app_config_dir()?.join("external-open-mode.json");
+            let mode = open_preferences::load_mode(&config);
+            *app.state::<OpenPreferences>()
+                .0
+                .lock()
+                .map_err(|_| "打开方式配置不可用")? = mode;
             let requests = requests_from_args(
                 env::args_os()
                     .skip(1)
@@ -658,11 +737,14 @@ pub fn run() {
                 .into_iter()
                 .filter(|(path, _)| allow_request(app.handle(), path).is_ok())
                 .collect::<Vec<_>>();
-            let (main_requests, extra_requests) = split_launch_requests(allowed);
+            let (main_requests, extra_requests) = split_launch_requests(allowed, mode);
             {
                 let state = app.state::<PendingOpenRequests>();
                 let mut queue = state.0.lock().map_err(|_| "打开文件队列不可用")?;
-                queue.extend(main_requests.into_iter().map(|(_, request)| request));
+                queue
+                    .entry("main".to_string())
+                    .or_default()
+                    .extend(main_requests.into_iter().map(|(_, request)| request));
             }
             for (path, request) in extra_requests {
                 if open_reader_window_impl(app.handle(), &path, &request).is_err() {
@@ -671,7 +753,24 @@ pub fn run() {
             }
             Ok(())
         })
+        .on_window_event(|window, event| {
+            let app = window.app_handle();
+            if matches!(event, tauri::WindowEvent::Focused(true)) {
+                if let Ok(mut last) = app.state::<LastFocusedWindow>().0.lock() {
+                    *last = Some(window.label().to_string());
+                }
+            } else if matches!(event, tauri::WindowEvent::Destroyed) {
+                if let Ok(mut documents) = app.state::<WindowDocuments>().0.lock() {
+                    documents.remove(window.label());
+                }
+                if let Ok(mut queue) = app.state::<PendingOpenRequests>().0.lock() {
+                    queue.remove(window.label());
+                }
+            }
+        })
         .invoke_handler(tauri::generate_handler![
+            get_external_open_mode,
+            set_external_open_mode,
             prepare_open_request,
             resolve_relative_resources,
             take_pending_open_requests,
@@ -869,12 +968,71 @@ mod tests {
     }
 
     #[test]
+    fn current_window_uses_last_active_window_and_handles_closed_windows() {
+        let labels = vec!["main".to_string(), "reader-1".to_string()];
+        assert_eq!(
+            select_current_window(Some("reader-1"), &labels).as_deref(),
+            Some("reader-1")
+        );
+        assert_eq!(
+            select_current_window(Some("closed"), &labels).as_deref(),
+            Some("main")
+        );
+        assert_eq!(
+            select_current_window(None, &labels).as_deref(),
+            Some("main")
+        );
+        assert_eq!(
+            select_current_window(Some("main"), &labels[1..]).as_deref(),
+            Some("reader-1")
+        );
+        assert_eq!(select_current_window(None, &[]), None);
+    }
+
+    #[test]
     fn launch_keeps_only_the_first_file_on_the_main_window() {
-        let (main, extras) = split_launch_requests(vec!["a.md", "b.md", "c.md"]);
+        let (main, extras) =
+            split_launch_requests(vec!["a.md", "b.md", "c.md"], ExternalOpenMode::NewWindow);
         assert_eq!(main, vec!["a.md"]);
         assert_eq!(extras, vec!["b.md", "c.md"]);
-        let (empty_main, empty_extras) = split_launch_requests::<String>(Vec::new());
+        let (empty_main, empty_extras) =
+            split_launch_requests::<String>(Vec::new(), ExternalOpenMode::NewWindow);
         assert!(empty_main.is_empty());
         assert!(empty_extras.is_empty());
+    }
+
+    #[test]
+    fn default_launch_queues_all_files_without_creating_extra_windows() {
+        let (current, extra) =
+            split_launch_requests(vec!["a.md", "b.md"], ExternalOpenMode::default());
+        assert_eq!(current, vec!["a.md", "b.md"]);
+        assert!(extra.is_empty());
+    }
+
+    #[test]
+    fn pending_requests_stay_ordered_and_are_consumed_only_by_the_target_window() {
+        let request = |path: &str| DesktopOpenRequest {
+            path: path.to_string(),
+            file_name: path.to_string(),
+            size: 1,
+            source: "association".to_string(),
+        };
+        let mut queues = HashMap::from([
+            (
+                "reader-1".to_string(),
+                VecDeque::from([request("first.md"), request("second.md")]),
+            ),
+            ("main".to_string(), VecDeque::from([request("main.md")])),
+        ]);
+        assert!(drain_window_requests(&mut queues, "reader-2").is_empty());
+        assert_eq!(
+            drain_window_requests(&mut queues, "main"),
+            vec![request("main.md")]
+        );
+        assert_eq!(
+            drain_window_requests(&mut queues, "reader-1"),
+            vec![request("first.md"), request("second.md")]
+        );
+        assert!(drain_window_requests(&mut queues, "reader-1").is_empty());
     }
 }
