@@ -53,6 +53,7 @@ import {
 import { BottomNav, CommandPalette, DirectoryBrowserPopover, LoadingState, OpenErrorState, PasteOpenDialog } from './ui/chrome'
 import { HomePage } from './home/HomePage'
 import { ReaderPage } from './reader/ReaderPage'
+import { createNativeOpenQueue } from './app/native-open-queue'
 
 const SettingsPage = lazy(() => import('./SettingsPage'))
 
@@ -84,8 +85,7 @@ function App() {
   const [windowDocumentReady, setWindowDocumentReady] = useState(() => !desktopPlatform.isDesktop())
   const fileInputRef = useRef<HTMLInputElement>(null)
   const archiveCleanupStartedRef = useRef(false)
-  const openQueueRunningRef = useRef(false)
-  const drainOpenQueueRef = useRef<() => void>(() => undefined)
+  const drainOpenQueueRef = useRef<(retryRequestId?: string) => void>(() => undefined)
   const toastTimerRef = useRef<number | null>(null)
   const activeDocumentIdRef = useRef(activeDocumentId)
   const viewRef = useRef(view)
@@ -696,33 +696,23 @@ function App() {
     if (!Capacitor.isNativePlatform() || !documentsHydrated) return undefined
     let disposed = false
     let handle: PluginListenerHandle | undefined
-    const drainQueue = async () => {
-      if (disposed || openQueueRunningRef.current) return
-      openQueueRunningRef.current = true
-      try {
-        const { requests } = await FastViewerFiles.getPendingOpenRequests()
-        for (const request of requests) {
-          if (disposed) break
-          if (request.error) {
-            setFailedOpenRequest(request)
-            showToast(`${request.fileName} 等待处理`, 'warning')
-            break
-          }
-          try {
-            const result = await FastViewerFiles.resolveOpenRequest({ requestId: request.requestId })
-            const imported = await importExternalResult(result, true)
-            if (!imported) break
-            await FastViewerFiles.acknowledgeOpenRequest({ requestId: request.requestId })
-          } catch (error) {
-            setFailedOpenRequest({ ...request, error: error instanceof Error ? error.message : '外部打开请求处理失败' })
-            break
-          }
-        }
-      } finally {
-        openQueueRunningRef.current = false
-      }
+    const queue = createNativeOpenQueue({
+      getRequests: async () => (await FastViewerFiles.getPendingOpenRequests()).requests,
+      open: async (request) => importExternalResult(await FastViewerFiles.resolveOpenRequest({ requestId: request.requestId }), true),
+      acknowledge: async (requestId) => { await FastViewerFiles.acknowledgeOpenRequest({ requestId }) },
+      onSettled: (failure) => {
+        setFailedOpenRequest(failure)
+        if (failure) showToast(`${failure.fileName} 等待处理`, 'warning')
+      },
+    })
+    const drainQueue = (retryRequestId?: string) => {
+      if (disposed) return
+      setFailedOpenRequest(null)
+      void (retryRequestId ? queue.retry(retryRequestId) : queue.drain()).catch((error) => {
+        if (!disposed) showToast(error instanceof Error ? error.message : '无法读取外部打开队列', 'warning')
+      })
     }
-    drainOpenQueueRef.current = () => { void drainQueue() }
+    drainOpenQueueRef.current = drainQueue
     void FastViewerFiles.addListener('openRequestAvailable', () => { void drainQueue() }).then((listenerHandle) => {
       handle = listenerHandle
       void drainQueue()
@@ -732,6 +722,7 @@ function App() {
     })
     return () => {
       disposed = true
+      queue.dispose()
       drainOpenQueueRef.current = () => undefined
       void handle?.remove()
     }
@@ -1567,8 +1558,9 @@ function App() {
             <p className="large-file-warning">{failedOpenRequest.fileName}：{failedOpenRequest.error ?? '处理失败，临时文件已安全保留。'}</p>
             <div className="error-actions">
               <button className="primary-action compact" type="button" onClick={() => {
+                const requestId = failedOpenRequest.requestId
                 setFailedOpenRequest(null)
-                drainOpenQueueRef.current()
+                drainOpenQueueRef.current(requestId)
               }}>重试</button>
               <button className="secondary-action compact" type="button" onClick={() => {
                 const requestId = failedOpenRequest.requestId

@@ -73,10 +73,6 @@ public class FastViewerFilesPlugin extends Plugin {
         add("htm");
         add("xhtml");
     }};
-    private static final Set<String> ARCHIVE_EXTENSIONS = new HashSet<String>() {{
-        add("zip");
-        add("rar");
-    }};
     private static final int MAX_ARCHIVE_ENTRIES = 1000;
     private static final int MAX_ARCHIVE_DEPTH = 20;
     private static final long MAX_ARCHIVE_ENTRY_SIZE = 20L * 1024L * 1024L;
@@ -286,19 +282,9 @@ public class FastViewerFilesPlugin extends Plugin {
         try {
             ContentResolver resolver = getContext().getContentResolver();
             String fileName = resolveFileName(resolver, uri);
-            long size = resolveFileSize(resolver, uri);
             String mimeType = resolver.getType(uri);
-            if (isArchive(fileName, mimeType)) {
-                File archiveFile = copyUriToCache(resolver, uri, fileName);
-                call.resolve(createArchiveResult(archiveFile, fileName, mimeType, size, uri.toString()));
-                return;
-            }
-            if (!isViewableFile(fileName)) {
-                call.resolve(createUnsupportedFileResult(fileName));
-                return;
-            }
             File cachedFile = copyUriToCache(resolver, uri, fileName);
-            call.resolve(createResult(uri, fileName, mimeType, size, cachedFile.getAbsolutePath()));
+            call.resolve(resolveCachedFile(cachedFile, fileName, mimeType, uri.toString(), false));
         } catch (Exception exception) {
             call.reject("文件读取失败：" + exception.getMessage(), exception);
         }
@@ -318,21 +304,10 @@ public class FastViewerFilesPlugin extends Plugin {
         try {
             ContentResolver resolver = getContext().getContentResolver();
             String fileName = resolveFileName(resolver, uri);
-            long size = resolveFileSize(resolver, uri);
             String mimeType = resolver.getType(uri);
 
-            if (isArchive(fileName, mimeType)) {
-                File archiveFile = copyUriToCache(resolver, uri, fileName);
-                call.resolve(createArchiveResult(archiveFile, fileName, mimeType, size, uri.toString()));
-                return;
-            }
-            if (!isViewableFile(fileName)) {
-                call.resolve(createUnsupportedFileResult(fileName));
-                return;
-            }
-
             File cachedFile = copyUriToCache(resolver, uri, fileName);
-            call.resolve(createResult(uri, fileName, mimeType, size, cachedFile.getAbsolutePath()));
+            call.resolve(resolveCachedFile(cachedFile, fileName, mimeType, uri.toString(), false));
         } catch (SecurityException exception) {
             JSObject result = new JSObject();
             result.put("hasFile", false);
@@ -411,7 +386,7 @@ public class FastViewerFilesPlugin extends Plugin {
                     item.put("size", target.length());
                     item.put("cachedPath", target.getAbsolutePath());
                     item.put("sourceUri", uri.toString());
-                    item.put("isArchive", isArchive(fileName, resolver.getType(uri)));
+                    item.put("isArchive", ExternalFileType.isArchiveHint(fileName, resolver.getType(uri)));
                     queue.put(item);
                 }
             } catch (Exception exception) {
@@ -487,23 +462,10 @@ public class FastViewerFilesPlugin extends Plugin {
             File stored = resolveAllowedFile(queued.optString("cachedPath"));
             String fileName = queued.optString("fileName");
             String mimeType = queued.optString("mimeType", "");
-            if (queued.optBoolean("isArchive", false)) {
-                File temporary = new File(getContext().getCacheDir(), "queued-" + requestId + "-" + sanitizeName(fileName));
-                try {
-                    try (InputStream input = new FileInputStream(stored); OutputStream output = new FileOutputStream(temporary)) {
-                        copy(input, output);
-                    }
-                    JSObject result = createArchiveResult(temporary, fileName, mimeType, stored.length(), queued.optString("sourceUri", null));
-                    result.put("requestId", requestId);
-                    call.resolve(result);
-                } finally {
-                    temporary.delete();
-                }
-            } else {
-                JSObject result = createResult(Uri.parse(queued.optString("sourceUri", "")), fileName, mimeType, stored.length(), stored.getAbsolutePath());
-                result.put("requestId", requestId);
-                call.resolve(result);
-            }
+            // Reclassify persisted requests too: older builds may have queued Markdown as RAR.
+            JSObject result = resolveCachedFile(stored, fileName, mimeType, queued.optString("sourceUri", ""), true);
+            result.put("requestId", requestId);
+            call.resolve(result);
         } catch (Exception exception) {
             call.reject("无法处理外部打开请求：" + exception.getMessage(), exception);
         }
@@ -820,7 +782,7 @@ public class FastViewerFilesPlugin extends Plugin {
             try (FileOutputStream output = new FileOutputStream(archiveFile)) {
                 output.write(Base64.decode(base64Content, Base64.DEFAULT));
             }
-            call.resolve(createArchiveResult(archiveFile, fileName, mimeType, size, null));
+            call.resolve(resolveCachedFile(archiveFile, fileName, mimeType, null, false));
         } catch (Exception exception) {
             JSObject result = new JSObject();
             result.put("hasFile", false);
@@ -843,21 +805,10 @@ public class FastViewerFilesPlugin extends Plugin {
         try {
             ContentResolver resolver = getContext().getContentResolver();
             String fileName = resolveFileName(resolver, uri);
-            long size = resolveFileSize(resolver, uri);
             String mimeType = resolver.getType(uri);
 
-            if (isArchive(fileName, mimeType)) {
-                File archiveFile = copyUriToCache(resolver, uri, fileName);
-                notifyListeners("fileOpen", createArchiveResult(archiveFile, fileName, mimeType, size, uri.toString()), true);
-                return;
-            }
-            if (!isViewableFile(fileName)) {
-                notifyListeners("fileOpen", createUnsupportedFileResult(fileName), true);
-                return;
-            }
-
             File cachedFile = copyUriToCache(resolver, uri, fileName);
-            notifyListeners("fileOpen", createResult(uri, fileName, mimeType, size, cachedFile.getAbsolutePath()), true);
+            notifyListeners("fileOpen", resolveCachedFile(cachedFile, fileName, mimeType, uri.toString(), false), true);
         } catch (SecurityException exception) {
             JSObject error = new JSObject();
             error.put("hasFile", false);
@@ -1102,6 +1053,34 @@ public class FastViewerFilesPlugin extends Plugin {
 
     private boolean isWithin(File root, File target) {
         return ArchiveSafety.isWithin(root, target);
+    }
+
+    private JSObject resolveCachedFile(File cachedFile, String fileName, String mimeType, String sourceUri, boolean retainFile) throws Exception {
+        boolean returnedDocument = false;
+        File archiveCopy = null;
+        try {
+            ExternalFileType type = ExternalFileType.resolve(cachedFile, fileName, mimeType);
+            if (type.isArchive()) {
+                File archive = cachedFile;
+                if (retainFile) {
+                    // Extraction owns its input; keep the durable queue copy available for retry.
+                    archiveCopy = File.createTempFile("queued-", "." + getExtension(type.fileName), getContext().getCacheDir());
+                    try (InputStream input = new FileInputStream(cachedFile); OutputStream output = new FileOutputStream(archiveCopy)) {
+                        copyWithLimit(input, output, MAX_OPEN_FILE_SIZE);
+                    }
+                    archive = archiveCopy;
+                }
+                return createArchiveResult(archive, type.fileName, type.mimeType, cachedFile.length(), sourceUri);
+            }
+            if (!type.isDocument()) return createUnsupportedFileResult(type.fileName);
+            JSObject result = createResult(Uri.parse(sourceUri == null ? "" : sourceUri), type.fileName, type.mimeType,
+                cachedFile.length(), cachedFile.getAbsolutePath());
+            returnedDocument = true;
+            return result;
+        } finally {
+            if (archiveCopy != null) archiveCopy.delete();
+            if (!retainFile && !returnedDocument) cachedFile.delete();
+        }
     }
 
     private JSObject createResult(Uri uri, String fileName, String mimeType, long size, String cachedPath) {
@@ -1554,20 +1533,6 @@ public class FastViewerFilesPlugin extends Plugin {
             output.write(buffer, 0, read);
         }
         return total;
-    }
-
-    private boolean isArchive(String fileName, String mimeType) {
-        String extension = getExtension(fileName);
-        return ARCHIVE_EXTENSIONS.contains(extension)
-            || "application/zip".equalsIgnoreCase(mimeType)
-            || "application/x-zip".equalsIgnoreCase(mimeType)
-            || "application/x-zip-compressed".equalsIgnoreCase(mimeType)
-            || "multipart/x-zip".equalsIgnoreCase(mimeType)
-            || "application/x-compressed".equalsIgnoreCase(mimeType)
-            || "application/rar".equalsIgnoreCase(mimeType)
-            || "application/vnd.rar".equalsIgnoreCase(mimeType)
-            || "application/x-rar".equalsIgnoreCase(mimeType)
-            || "application/x-rar-compressed".equalsIgnoreCase(mimeType);
     }
 
     private boolean isViewableFile(String fileName) {
