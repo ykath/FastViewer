@@ -1,9 +1,11 @@
+export type DiagramStyle = 'refined' | 'original'
 export type ThemeMode = 'light' | 'dark'
 export type ThemePreference = ThemeMode | 'system'
 export type ExternalResourcePolicy = 'block' | 'ask' | 'allowTrusted'
 
 export type ReaderSettings = {
   themeMode: ThemePreference
+  diagramStyle: DiagramStyle
   fontSizeLevel: number
   lineHeightLevel: number
   contentWidthLevel: number
@@ -22,6 +24,7 @@ export type ReaderSettings = {
 
 export const DEFAULT_READER_SETTINGS: ReaderSettings = {
   themeMode: 'system',
+  diagramStyle: 'refined',
   fontSizeLevel: 2,
   lineHeightLevel: 1,
   contentWidthLevel: 1,

@@ -231,6 +231,9 @@ export function buildPrintDocument(title: string, bodyHtml: string) {
     code { font-family: SFMono-Regular, Consolas, monospace; font-size: 0.9em; }
     a { color: #138263; text-decoration: none; }
     blockquote { padding: 10px 12px; border-left: 3px solid #138263; background: #e3f3ed; margin-left: 0; }
+    .mermaid-diagram { margin: 18px 0; break-inside: avoid; }
+    .mermaid-svg svg { display: block; max-width: 100%; height: auto; margin: 0 auto; }
+    .mermaid-render-host, .mermaid-status, .mermaid-fallback { display: none; }
     mark.search-hit { background: transparent; color: inherit; }
   </style>
   ${PRINT_CSS}

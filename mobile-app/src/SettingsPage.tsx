@@ -70,6 +70,7 @@ export default function SettingsPage({ settings, resolvedTheme, onSetSettings, s
       <header className="simple-header"><div><p className="eyebrow">Settings</p><h1>设置</h1></div></header>
       <section className="settings-list">
         <SettingRow icon={resolvedTheme === 'light' ? <Sun size={19} /> : <Moon size={19} />} title="阅读主题" description="跟随系统、浅色和深色即时切换" value={themePreferenceLabel(settings.themeMode)} onClick={() => onSetSettings({ ...settings, themeMode: nextThemePreference(settings.themeMode) })} />
+        <SettingRow icon={<BookOpen size={19} />} title="流程图样式" description="切换精致排版和原始 Mermaid 图形" value={settings.diagramStyle === 'original' ? '原始' : '精致'} onClick={() => onSetSettings({ ...settings, diagramStyle: settings.diagramStyle === 'original' ? 'refined' : 'original' })} />
         <SettingRow icon={<ShieldCheck size={19} />} title="HTML 外部资源" description="控制远程图片、样式和字体的加载" value={externalPolicyLabel(settings.externalResourcePolicy)} onClick={() => onSetSettings({ ...settings, externalResourcePolicy: nextExternalPolicy(settings.externalResourcePolicy) })} />
         <SettingRow icon={<SlidersHorizontal size={19} />} title="字号档位" description="阅读页可通过 A- / A+ 调整" value={`${settings.fontSizeLevel + 1}/5`} />
         <SettingRow icon={<SlidersHorizontal size={19} />} title="正文行高" description="紧凑、标准和宽松三档" value={['紧凑', '标准', '宽松'][settings.lineHeightLevel] ?? '标准'} onClick={() => onSetSettings({ ...settings, lineHeightLevel: (settings.lineHeightLevel + 1) % 3 })} />

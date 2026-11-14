@@ -11,6 +11,7 @@ import { finishPerformanceSpan, startPerformanceSpan } from '../performance-metr
 import { buildSafeHtmlDocument, rewriteRelativeResources, type HtmlRenderInfo } from '../html-processing'
 import type { DocumentRecord } from '../document-types'
 import type { ThemeMode } from '../reader-settings'
+import { waitForRichTextRender } from '../rich-text-copy'
 import {
   PRINT_CSS,
   buildPrintDocument,
@@ -49,6 +50,14 @@ export function useReaderExport({
   allowExternalResources: boolean
 }) {
   const [exporting, setExporting] = useState(false)
+  const [exportRenderAll, setExportRenderAll] = useState(false)
+
+  const prepareRenderedContent = async () => {
+    const root = contentRef.current
+    if (!root?.classList.contains('markdown-body')) return root
+    setExportRenderAll(true)
+    return await waitForRichTextRender(() => contentRef.current)
+  }
   const shareOriginalFile = async () => {
     if (exporting) return
     setExporting(true)
@@ -123,7 +132,7 @@ export function useReaderExport({
       if (doc.fileType === 'html' && htmlInfo) {
         printHtml = htmlInfo.srcDoc.replace('</head>', `${PRINT_CSS}</head>`)
       } else {
-        const rendered = contentRef.current?.innerHTML ?? `<pre>${escapeHtml(doc.content)}</pre>`
+        const rendered = (await prepareRenderedContent())?.innerHTML ?? `<pre>${escapeHtml(doc.content)}</pre>`
         printHtml = buildPrintDocument(doc.fileName, rendered)
       }
 
@@ -161,6 +170,7 @@ export function useReaderExport({
       }
     } finally {
       if (!signal.aborted && backgroundTasks.list().find((item) => item.id === task.id)?.status === 'running') backgroundTasks.complete(task.id)
+      setExportRenderAll(false)
       setExporting(false)
     }
   }
@@ -188,7 +198,7 @@ export function useReaderExport({
           canvas = await captureHtmlFrameAsCanvas(iframeRef.current, resolvedTheme)
         }
       } else {
-        targetElement = contentRef.current
+        targetElement = await prepareRenderedContent()
 
         if (!targetElement) throw new Error('无法获取内容区域')
 
@@ -276,9 +286,10 @@ export function useReaderExport({
       }
     } finally {
       if (!signal.aborted && backgroundTasks.list().find((item) => item.id === task.id)?.status === 'running') backgroundTasks.complete(task.id)
+      setExportRenderAll(false)
       setExporting(false)
     }
   }
 
-  return { exporting, setExporting, shareOriginalFile, exportPdf, shareAsImage }
+  return { exporting, setExporting, shareOriginalFile, exportPdf, shareAsImage, exportRenderAll }
 }

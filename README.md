@@ -6,25 +6,25 @@
 
 ## 当前版本状态
 
-轻页的 Windows 与 Android 源码版本均为 1.6.3，公开安装包按平台发布：
+轻页的 Windows 与 Android 源码版本均为 1.6.5，公开安装包按平台发布：
 
 | 平台 | 当前源码版本 | 最新公开 Release | 说明 |
 | --- | --- | --- | --- |
-| Windows x64 | **1.6.3** | **v1.6.2** | 提供未签名的安装版和便携版 |
-| Android | **1.6.3**（`versionCode 13`） | **v1.6.1** | 1.6.3 为本地修复构建，尚未公开发布；公开版为正式证书签名 APK |
+| Windows x64 | **1.6.5** | **v1.6.5** | 提供未签名的安装版和便携版 |
+| Android | **1.6.5**（`versionCode 15`） | **v1.6.1** | Android 公开版为正式证书签名 APK |
 
-> `v1.6.2` 发布 Windows 构建；Android 请下载 `v1.6.1` 中的 APK。从调试证书安装的旧版本升级到正式签名 APK 时，需要先卸载再安装。
+> `v1.6.5` 发布 Windows 构建；Android 请下载 `v1.6.1` 中的 APK。从调试证书安装的旧版本升级到正式签名 APK 时，需要先卸载再安装。
 
 ## 下载
 
 请从项目的 [GitHub Releases](https://github.com/ykath/FastViewer/releases) 下载，避免使用来源不明的安装文件。
 
-### Windows 1.6.2
+### Windows 1.6.5
 
 [前往最新 Release](https://github.com/ykath/FastViewer/releases/latest)：
 
-- [安装版：LightPage_1.6.2_windows-x64-setup.exe](https://github.com/ykath/FastViewer/releases/download/v1.6.2/LightPage_1.6.2_windows-x64-setup.exe)
-- [便携版：LightPage_1.6.2_windows-x64.exe](https://github.com/ykath/FastViewer/releases/download/v1.6.2/LightPage_1.6.2_windows-x64.exe)
+- [安装版：LightPage_1.6.5_windows-x64-setup.exe](https://github.com/ykath/FastViewer/releases/download/v1.6.5/LightPage_1.6.5_windows-x64-setup.exe)
+- [便携版：LightPage_1.6.5_windows-x64.exe](https://github.com/ykath/FastViewer/releases/download/v1.6.5/LightPage_1.6.5_windows-x64.exe)
 
 推荐普通用户使用安装版。便携版依赖目标电脑已安装 Microsoft Edge WebView2 Runtime。
 
@@ -79,7 +79,7 @@ Android 最新公开安装包位于 [v1.6.1 Release](https://github.com/ykath/Fa
 
 ## 平台差异与已知限制
 
-| 能力 | Android 1.6.1 | Windows 1.6.1 |
+| 能力 | Android 1.6.1 | Windows 1.6.5 |
 | --- | --- | --- |
 | 从其他应用/资源管理器打开 | 支持 Android Intent 与系统分享入口 | 支持文件选择、拖放、文件关联和单实例唤起 |
 | ZIP / RAR 文档包 | 支持 ZIP 与 RAR | 支持 ZIP；RAR 会提示先转换为 ZIP |
@@ -100,6 +100,11 @@ Android 最新公开安装包位于 [v1.6.1 Release](https://github.com/ykath/Fa
 
 ## 版本变化
 
+### v1.6.5（Windows）
+
+- Markdown 流程图使用 ELK 布局，修复图表被代码块深色背景包裹的问题。
+- 可在「设置 → 流程图样式」切换精致与原始样式。详见 [1.6.5 发布说明](doc/lightpage-1.6.5.md)。
+
 ### v1.6.3（2026-11-02，本地 Android 修复构建，尚未公开发布）
 
 - 修复微信等外部应用将 Markdown 错标为压缩包时，打开文件进入 RAR 解压错误页的问题。
@@ -108,7 +113,7 @@ Android 最新公开安装包位于 [v1.6.1 Release](https://github.com/ykath/Fa
 - 旧压缩包处理失败不再阻塞后续微信文件；失败项保留并支持单独重试，处理期间的新打开通知也不会丢失。
 - Android `versionCode` 更新为 13；本地构建产物为 `mobile-app/release/android/LightPage_1.6.3_android.apk`。
 
-### v1.6.2（2026-10-23，Windows 当前公开版本）
+### v1.6.2（2026-10-23）
 
 - Windows 增加“双击文件打开方式”设置，默认在当前窗口打开，也可选择新窗口；设置即时生效，重启后保留。
 - 多窗口下使用最近活动的阅读窗口接收文件，并按窗口隔离打开队列，避免文件被其他窗口接收。

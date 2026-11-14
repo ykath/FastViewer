@@ -888,7 +888,7 @@ export function ReaderPage({
     setEncodingOpen(false)
   }
 
-  const { exporting, setExporting, shareOriginalFile, exportPdf, shareAsImage } = useReaderExport({
+  const { exporting, setExporting, shareOriginalFile, exportPdf, shareAsImage, exportRenderAll } = useReaderExport({
     doc: document,
     isDesktop,
     onShowToast,
@@ -1514,11 +1514,12 @@ export function ReaderPage({
               resources={document.archiveResources}
               contentRef={contentRef}
               themeMode={resolvedTheme}
+              diagramStyle={settings.diagramStyle}
               onOpenExternalLink={handleOpenExternalLink}
               onOpenDocumentLink={handleOpenDocumentLink}
               searchQuery={debouncedQuery}
               forceHeadingId={activeHeadingId}
-              renderAll={richCopyRenderAll}
+              renderAll={richCopyRenderAll || exportRenderAll}
               onPlanReady={handleRenderPlanReady}
               onRenderChange={handleRenderChange}
             />

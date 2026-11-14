@@ -1,31 +1,35 @@
 import { Check, Copy, Maximize2, Minus, Plus, X } from 'lucide-react'
-import { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react'
+import { useCallback, useContext, useEffect, useId, useMemo, useRef, useState } from 'react'
 import type React from 'react'
 import { createPortal } from 'react-dom'
-import type { MermaidConfig, RenderResult } from 'mermaid'
-import type { ThemeMode } from './reader-settings'
+import type { DiagramStyle, ThemeMode } from './reader-settings'
+import { renderMermaidSvg } from './mermaid-renderer'
+import { EagerMermaidContext } from './mermaid-context'
 import { readSvgDimensions } from './mermaid-image'
 
 type MermaidDiagramProps = {
   source: string
   themeMode: ThemeMode
-  eager?: boolean
+  diagramStyle: DiagramStyle
 }
 
 type DiagramState =
   | { status: 'loading' }
-  | { status: 'ready'; svg: string }
+  | { status: 'ready'; svg: string; appearance: 'refined' | 'original' | 'fallback' }
   | { status: 'error'; message: string }
 
 let renderQueue: Promise<void> = Promise.resolve()
 
-export default function MermaidDiagram({ source, themeMode, eager = false }: MermaidDiagramProps) {
+export default function MermaidDiagram({ source, themeMode, diagramStyle }: MermaidDiagramProps) {
+  const eager = useContext(EagerMermaidContext)
   const reactId = useId()
   const figureRef = useRef<HTMLElement>(null)
   const renderHostRef = useRef<HTMLDivElement>(null)
   const [state, setState] = useState<DiagramState>({ status: 'loading' })
   const [eligible, setEligible] = useState(eager)
   const [viewerOpen, setViewerOpen] = useState(false)
+  const svg = state.status === 'ready' ? state.svg : undefined
+  const svgMarkup = useMemo(() => ({ __html: svg ?? '' }), [svg])
   const diagramId = `mermaid-${reactId.replace(/[^a-zA-Z0-9_-]/g, '')}`
 
   useEffect(() => {
@@ -78,10 +82,8 @@ export default function MermaidDiagram({ source, themeMode, eager = false }: Mer
     const renderTask = renderQueue.then(async () => {
       if (!renderHost || cancelled) return
       try {
-        const { default: mermaid } = await import('mermaid')
-        mermaid.initialize(createMermaidConfig(themeMode))
-        const result: RenderResult = await mermaid.render(diagramId, source, renderHost)
-        if (!cancelled) setState({ status: 'ready', svg: result.svg })
+        const result = await renderMermaidSvg(source, themeMode, diagramStyle, diagramId, renderHost)
+        if (!cancelled) setState({ status: 'ready', ...result })
       } catch (error) {
         if (!cancelled) {
           setState({
@@ -98,7 +100,7 @@ export default function MermaidDiagram({ source, themeMode, eager = false }: Mer
     return () => {
       cancelled = true
     }
-  }, [diagramId, eligible, source, themeMode])
+  }, [diagramId, diagramStyle, eligible, source, themeMode])
 
   const openViewer = (event: React.MouseEvent<HTMLDivElement>) => {
     event.preventDefault()
@@ -113,6 +115,7 @@ export default function MermaidDiagram({ source, themeMode, eager = false }: Mer
       className="mermaid-diagram"
       data-search-exclude="true"
       data-mermaid-source={source}
+      data-diagram-appearance={state.status === 'ready' ? state.appearance : undefined}
       data-render-status={!eligible ? 'pending' : state.status}
     >
       <div ref={renderHostRef} className="mermaid-render-host" aria-hidden="true" />
@@ -128,8 +131,11 @@ export default function MermaidDiagram({ source, themeMode, eager = false }: Mer
           title="双击放大查看"
           onClick={(event) => event.stopPropagation()}
           onDoubleClick={openViewer}
-          dangerouslySetInnerHTML={{ __html: state.svg }}
+          dangerouslySetInnerHTML={svgMarkup}
         />
+      )}
+      {state.status === 'ready' && state.appearance === 'fallback' && (
+        <p className="mermaid-fallback" role="status">已使用原始样式显示此图</p>
       )}
       {state.status === 'error' && (
         <div className="mermaid-error" role="alert">
@@ -425,16 +431,4 @@ function namespaceSvg(svg: string, prefix: string) {
     namespaced = namespaced.replace(new RegExp(`id="${escaped}"`, 'g'), `id="${prefix}${id}"`)
   }
   return namespaced
-}
-
-function createMermaidConfig(themeMode: ThemeMode): MermaidConfig {
-  return {
-    startOnLoad: false,
-    securityLevel: 'strict',
-    theme: themeMode === 'dark' ? 'dark' : 'neutral',
-    flowchart: {
-      htmlLabels: false,
-      useMaxWidth: true,
-    },
-  }
 }

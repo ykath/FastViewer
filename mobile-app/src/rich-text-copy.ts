@@ -67,7 +67,7 @@ export async function buildRichTextPayload(
   unwrapMatches(clone, 'mark.search-hit, mark.annotation-highlight')
   clone.querySelectorAll('.markdown-table-hscroll').forEach((element) => element.remove())
   unwrapMatches(clone, '.markdown-table-block, .markdown-table-wrap, .render-block')
-  clone.querySelectorAll('style, script, button, .mermaid-render-host, .mermaid-status, .mermaid-zoom-overlay').forEach((element) => element.remove())
+  clone.querySelectorAll('style, script, button, .mermaid-render-host, .mermaid-status, .mermaid-fallback, .mermaid-zoom-overlay').forEach((element) => element.remove())
   clone.querySelectorAll('svg').forEach((element) => element.remove())
   applyPortableStyles(clone)
   cleanInternalAttributes(clone)

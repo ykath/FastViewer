@@ -10,6 +10,7 @@ import remarkGfm from 'remark-gfm'
 import remarkMath from 'remark-math'
 import katexStyles from 'katex/dist/katex.min.css?inline'
 import MermaidDiagram from './MermaidDiagram'
+import { EagerMermaidContext } from './mermaid-context'
 import rehypeCodeHighlight from './rehype-code-highlight'
 import remarkDisplayMath from './remark-display-math'
 import remarkReferenceBreaks from './remark-reference-breaks'
@@ -18,7 +19,7 @@ import { defaultHandlers } from 'mdast-util-to-hast'
 import type { PluggableList } from 'unified'
 import MarkdownVideo from './MarkdownVideo'
 import { isVideoPath, normalizeMarkdownVideoHtml, parseMarkdownVideoPayload } from './markdown-media'
-import type { ThemeMode } from './reader-settings'
+import type { DiagramStyle, ThemeMode } from './reader-settings'
 import { buildRenderPlan, createRenderPlan, reconcileRenderPlans } from './render-plan'
 import type { RenderBlock, RenderPlan } from './render-plan'
 import { allocateMarkdownHeadingId, classifyMarkdownLink } from './html-processing'
@@ -30,6 +31,7 @@ type MarkdownReaderProps = {
   resources?: Record<string, string>
   contentRef: React.RefObject<HTMLElement | null>
   themeMode: ThemeMode
+  diagramStyle?: DiagramStyle
   onOpenExternalLink?: (url: string) => void
   onOpenDocumentLink?: (href: string, options?: { newWindow?: boolean }) => void
   searchQuery?: string
@@ -53,7 +55,7 @@ const remarkRehypeOptions = {
   },
 } as import('remark-rehype').Options
 
-function MarkdownReader({ content, documentPath, resources, contentRef, themeMode, onOpenExternalLink, onOpenDocumentLink, searchQuery = '', forceHeadingId, renderAll = false, onPlanReady, onRenderChange }: MarkdownReaderProps) {
+function MarkdownReader({ content, documentPath, resources, contentRef, themeMode, diagramStyle = 'refined', onOpenExternalLink, onOpenDocumentLink, searchQuery = '', forceHeadingId, renderAll = false, onPlanReady, onRenderChange }: MarkdownReaderProps) {
   const renderContent = useMemo(() => normalizeMarkdownVideoHtml(content), [content])
   const [asyncPlan, setAsyncPlan] = useState<RenderPlan | null>(null)
   const lastCompletedPlanRef = useRef<RenderPlan | null>(null)
@@ -99,15 +101,15 @@ function MarkdownReader({ content, documentPath, resources, contentRef, themeMod
       documentPath,
       resources,
       themeMode,
+      diagramStyle,
       headingCountsRef,
       (url) => externalLinkRef.current?.(url),
       (href, options) => documentLinkRef.current?.(href, options),
-      renderAll,
     ),
   /* eslint-enable react-hooks/refs */
     // Callback identity must not rebuild the component map, or <video> remounts while scrolling.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [renderContent, documentPath, resources, themeMode, renderAll],
+    [renderContent, documentPath, resources, themeMode, diagramStyle],
   )
   if (!plan) return <article key={renderRevision} className="reader-content markdown-body" ref={contentRef}>正在生成大文档阅读视图...</article>
   if (renderContent.length >= PROGRESSIVE_THRESHOLD) {
@@ -134,6 +136,7 @@ function MarkdownReader({ content, documentPath, resources, contentRef, themeMod
             documentPath={documentPath}
             resources={resources}
             themeMode={themeMode}
+            diagramStyle={diagramStyle}
             onOpenExternalLink={onOpenExternalLink}
             onOpenDocumentLink={onOpenDocumentLink}
             onRenderChange={onRenderChange}
@@ -145,15 +148,17 @@ function MarkdownReader({ content, documentPath, resources, contentRef, themeMod
   return (
     <article key={renderRevision} className="reader-content markdown-body" ref={contentRef}>
       <style data-search-exclude="true">{katexStyles}</style>
-      <ReactMarkdown
-        remarkPlugins={[...remarkPlugins]}
-        remarkRehypeOptions={remarkRehypeOptions}
-        rehypePlugins={[rehypeCodeHighlight, [rehypeKatex, { throwOnError: false, trust: false }], rehypeHeadingIds()]}
-        components={components}
-        urlTransform={markdownUrlTransform}
-      >
-        {renderContent}
-      </ReactMarkdown>
+      <EagerMermaidContext.Provider value={renderAll}>
+        <ReactMarkdown
+          remarkPlugins={[...remarkPlugins]}
+          remarkRehypeOptions={remarkRehypeOptions}
+          rehypePlugins={[rehypeCodeHighlight, [rehypeKatex, { throwOnError: false, trust: false }], rehypeHeadingIds()]}
+          components={components}
+          urlTransform={markdownUrlTransform}
+        >
+          {renderContent}
+        </ReactMarkdown>
+      </EagerMermaidContext.Provider>
     </article>
   )
 }
@@ -164,6 +169,7 @@ export default memo(MarkdownReader, (previous, next) => {
     && previous.resources === next.resources
     && previous.contentRef === next.contentRef
     && previous.themeMode === next.themeMode
+    && previous.diagramStyle === next.diagramStyle
     && previous.onOpenExternalLink === next.onOpenExternalLink
     && previous.onOpenDocumentLink === next.onOpenDocumentLink
     && previous.renderAll === next.renderAll
@@ -178,10 +184,10 @@ function createMarkdownComponents(
   documentPath: string | undefined,
   resources: Record<string, string> | undefined,
   themeMode: ThemeMode,
+  diagramStyle: DiagramStyle,
   headingCountsRef: { current: Map<string, number> },
   onOpenExternalLink?: (url: string) => void,
   onOpenDocumentLink?: (href: string, options?: { newWindow?: boolean }) => void,
-  eagerMermaid = false,
 ): Components {
   const documentDir = dirname(documentPath ?? '')
   const resolveResource = (src: string) => {
@@ -210,15 +216,14 @@ function createMarkdownComponents(
     table({ children }) {
       return <ScrollableTableWrap>{children}</ScrollableTableWrap>
     },
-    pre({ children }) {
-      return isValidElement(children) && children.type === MermaidDiagram ? children : <pre>{children}</pre>
-    },
-    code({ children, className, ...props }) {
-      const language = /(?:^|\s)language-([^\s]+)/.exec(className ?? '')?.[1]?.toLowerCase()
-      if (language === 'mermaid') {
-        return <MermaidDiagram source={String(children).replace(/\n$/, '')} themeMode={themeMode} eager={eagerMermaid} />
+    pre({ children, node, ...props }) {
+      const code = node?.children.find((child): child is Element => child.type === 'element' && child.tagName === 'code')
+      const classNames = code?.properties.className
+      if (code && Array.isArray(classNames) && classNames.some((name) => String(name).toLowerCase() === 'language-mermaid')) {
+        const source = code.children.map((child) => child.type === 'text' ? child.value : '').join('').replace(/\n$/, '')
+        return <MermaidDiagram source={source} themeMode={themeMode} diagramStyle={diagramStyle} />
       }
-      return <code className={className} {...props}>{children}</code>
+      return <pre {...props}>{children}</pre>
     },
     a({ children, href }) {
       const linkKind = classifyMarkdownLink(href)
@@ -284,6 +289,7 @@ const ProgressiveBlock = memo(function ProgressiveBlock({
   documentPath,
   resources,
   themeMode,
+  diagramStyle = 'refined',
   onOpenExternalLink,
   onOpenDocumentLink,
   onRenderChange,
@@ -295,6 +301,7 @@ const ProgressiveBlock = memo(function ProgressiveBlock({
   documentPath?: string
   resources?: Record<string, string>
   themeMode: ThemeMode
+  diagramStyle?: DiagramStyle
   onOpenExternalLink?: (url: string) => void
   onOpenDocumentLink?: (href: string, options?: { newWindow?: boolean }) => void
   onRenderChange?: () => void
@@ -309,19 +316,19 @@ const ProgressiveBlock = memo(function ProgressiveBlock({
   headingCountsRef.current = new Map(Object.entries(block.headingCountsBefore))
   const [visible, setVisible] = useState(initiallyVisible || forced)
   const [height, setHeight] = useState(block.estimatedHeight)
-  const keepAliveAfterMount = /```\s*mermaid\b/i.test(block.source)
+  const keepAliveAfterMount = /(?:`{3,}|~{3,})\s*mermaid\b/i.test(block.source)
   const components = useMemo(
     () => createMarkdownComponents(
       documentPath,
       resources,
       themeMode,
+      diagramStyle,
       headingCountsRef,
       (url) => externalLinkRef.current?.(url),
       (href, options) => documentLinkRef.current?.(href, options),
-      eagerMermaid,
     ),
     /* eslint-enable react-hooks/refs */
-    [documentPath, eagerMermaid, resources, themeMode],
+    [documentPath, resources, themeMode, diagramStyle],
   )
 
   useEffect(() => {
@@ -368,15 +375,17 @@ const ProgressiveBlock = memo(function ProgressiveBlock({
       style={visible ? undefined : { minHeight: `${height}px` }}
     >
       {visible && (
-        <ReactMarkdown
-          remarkPlugins={[...remarkPlugins]}
-          remarkRehypeOptions={remarkRehypeOptions}
-          rehypePlugins={[rehypeCodeHighlight, [rehypeKatex, { throwOnError: false, trust: false }], rehypeHeadingIds(block.headingCountsBefore)]}
-          components={components}
-          urlTransform={markdownUrlTransform}
-        >
-          {block.source}
-        </ReactMarkdown>
+        <EagerMermaidContext.Provider value={eagerMermaid}>
+          <ReactMarkdown
+            remarkPlugins={[...remarkPlugins]}
+            remarkRehypeOptions={remarkRehypeOptions}
+            rehypePlugins={[rehypeCodeHighlight, [rehypeKatex, { throwOnError: false, trust: false }], rehypeHeadingIds(block.headingCountsBefore)]}
+            components={components}
+            urlTransform={markdownUrlTransform}
+          >
+            {block.source}
+          </ReactMarkdown>
+        </EagerMermaidContext.Provider>
       )}
     </div>
   )
@@ -388,6 +397,7 @@ const ProgressiveBlock = memo(function ProgressiveBlock({
   && previous.documentPath === next.documentPath
   && previous.resources === next.resources
   && previous.themeMode === next.themeMode
+  && previous.diagramStyle === next.diagramStyle
   && previous.onOpenExternalLink === next.onOpenExternalLink
   && previous.onOpenDocumentLink === next.onOpenDocumentLink
   && previous.onRenderChange === next.onRenderChange)

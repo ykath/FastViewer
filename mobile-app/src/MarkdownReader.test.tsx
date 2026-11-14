@@ -146,15 +146,15 @@ describe('MarkdownReader', () => {
     )
 
     await waitFor(() => expect(container.querySelectorAll('.mermaid-svg svg')).toHaveLength(2))
+    expect(container.querySelector('pre > figure.mermaid-diagram')).toBeNull()
     expect(mermaidRenderMock).toHaveBeenCalledTimes(2)
     expect(mermaidRenderMock.mock.calls[0][0]).not.toBe(mermaidRenderMock.mock.calls[1][0])
     expect(mermaidInitializeMock).toHaveBeenCalledWith(expect.objectContaining({
       securityLevel: 'strict',
       startOnLoad: false,
       theme: 'neutral',
-      flowchart: expect.objectContaining({
-        useMaxWidth: true,
-      }),
+      htmlLabels: false,
+      flowchart: expect.objectContaining({ useMaxWidth: false }),
     }))
   })
 
