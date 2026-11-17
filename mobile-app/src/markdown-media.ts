@@ -54,21 +54,14 @@ export function normalizeArchiveResourcePath(documentDir: string, resourcePath: 
   const [pathOnly] = resourcePath.split(/[?#]/, 1)
   let decoded = pathOnly
   try { decoded = decodeURIComponent(pathOnly) } catch { /* keep */ }
-  const parts = `${documentDir}/${decoded}`.replace(/\\/g, '/').split('/')
-  const normalized: string[] = []
-  for (const part of parts) {
-    if (!part || part === '.') continue
-    if (part === '..') normalized.pop()
-    else normalized.push(part)
-  }
-  return normalized.join('/').toLowerCase()
+  return normalizeResourceKey(`${documentDir}/${decoded}`)
 }
 
 export function normalizeResourceKey(source: string) {
   const normalized: string[] = []
   for (const part of source.replace(/\\/g, '/').split('/')) {
     if (!part || part === '.') continue
-    if (part === '..') normalized.pop()
+    if (part === '..' && normalized.length > 0 && normalized.at(-1) !== '..') normalized.pop()
     else normalized.push(part)
   }
   return normalized.join('/').toLowerCase()

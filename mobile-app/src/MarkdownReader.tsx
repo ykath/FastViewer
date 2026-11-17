@@ -18,7 +18,7 @@ import remarkVideo, { markdownVideoHandler } from './remark-video'
 import { defaultHandlers } from 'mdast-util-to-hast'
 import type { PluggableList } from 'unified'
 import MarkdownVideo from './MarkdownVideo'
-import { isVideoPath, normalizeMarkdownVideoHtml, parseMarkdownVideoPayload } from './markdown-media'
+import { isVideoPath, normalizeArchiveResourcePath, normalizeMarkdownVideoHtml, parseMarkdownVideoPayload } from './markdown-media'
 import type { DiagramStyle, ThemeMode } from './reader-settings'
 import { buildRenderPlan, createRenderPlan, reconcileRenderPlans } from './render-plan'
 import type { RenderBlock, RenderPlan } from './render-plan'
@@ -482,20 +482,6 @@ function markdownUrlTransform(value: string) {
   return /^data:image\/(?:png|jpe?g|webp|gif|svg\+xml);base64,/i.test(value)
     ? value
     : defaultUrlTransform(value)
-}
-
-function normalizeArchiveResourcePath(documentDir: string, resourcePath: string) {
-  const [pathOnly] = resourcePath.split(/[?#]/, 1)
-  let decoded = pathOnly
-  try { decoded = decodeURIComponent(pathOnly) } catch { /* Keep the original path. */ }
-  const parts = `${documentDir}/${decoded}`.replace(/\\/g, '/').split('/')
-  const normalized: string[] = []
-  for (const part of parts) {
-    if (!part || part === '.') continue
-    if (part === '..') normalized.pop()
-    else normalized.push(part)
-  }
-  return normalized.join('/').toLowerCase()
 }
 
 function dirname(path: string) {

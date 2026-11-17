@@ -2,7 +2,7 @@ use serde::Serialize;
 use std::{
     collections::{HashMap, HashSet, VecDeque},
     env, fs,
-    path::{Path, PathBuf},
+    path::{Component, Path, PathBuf},
     sync::{
         atomic::{AtomicU64, Ordering},
         Mutex,
@@ -437,27 +437,29 @@ pub(crate) fn allow_request(app: &tauri::AppHandle, path: &Path) -> Result<(), S
 fn resolve_relative_resource_paths(
     document_path: impl AsRef<Path>,
     relative_paths: Vec<String>,
+    archive_cache: Option<&Path>,
 ) -> Result<HashMap<String, PathBuf>, String> {
     let document = fs::canonicalize(document_path.as_ref())
         .map_err(|_| "Markdown 文件不存在或无法访问".to_string())?;
     let document_dir = document
         .parent()
         .ok_or_else(|| "无法确定 Markdown 文件所在目录".to_string())?;
+    let in_archive = archive_cache.is_some_and(|cache| document_dir.starts_with(cache));
     let mut total_bytes = 0_u64;
     let mut resolved = HashMap::new();
     let mut video_count = 0_usize;
 
     for relative_path in relative_paths.into_iter().take(MAX_RELATIVE_RESOURCES) {
         let candidate = Path::new(&relative_path);
-        if candidate.is_absolute() || relative_path.contains('\0') {
+        if relative_path.contains('\0') {
             continue;
         }
+        let Some(relative_root) = relative_resource_root(document_dir, candidate) else {
+            continue;
+        };
         let Ok(canonical) = fs::canonicalize(document_dir.join(candidate)) else {
             continue;
         };
-        if !canonical.starts_with(document_dir) {
-            continue;
-        }
         let extension = canonical
             .extension()
             .and_then(|value| value.to_str())
@@ -466,6 +468,14 @@ fn resolve_relative_resource_paths(
         let is_image = extension.is_some_and(|value| SUPPORTED_IMAGE_EXTENSIONS.contains(&value));
         let is_video = extension.is_some_and(|value| SUPPORTED_VIDEO_EXTENSIONS.contains(&value));
         if !is_image && !is_video {
+            continue;
+        }
+        let allowed_root = if is_image && !in_archive {
+            relative_root
+        } else {
+            document_dir
+        };
+        if !canonical.starts_with(allowed_root) {
             continue;
         }
         if is_video && video_count >= MAX_RELATIVE_VIDEOS {
@@ -497,6 +507,20 @@ fn resolve_relative_resource_paths(
     Ok(resolved)
 }
 
+fn relative_resource_root<'a>(mut root: &'a Path, candidate: &Path) -> Option<&'a Path> {
+    let mut depth = 0;
+    for component in candidate.components() {
+        match component {
+            Component::Normal(_) => depth += 1,
+            Component::ParentDir if depth == 0 => root = root.parent()?,
+            Component::ParentDir => depth -= 1,
+            Component::CurDir => (),
+            Component::RootDir | Component::Prefix(_) => return None,
+        }
+    }
+    Some(root)
+}
+
 #[tauri::command]
 fn prepare_open_request(
     app: tauri::AppHandle,
@@ -514,7 +538,13 @@ fn resolve_relative_resources(
     document_path: String,
     relative_paths: Vec<String>,
 ) -> Result<HashMap<String, String>, String> {
-    let resources = resolve_relative_resource_paths(document_path, relative_paths)?;
+    let archive_cache = app
+        .path()
+        .app_cache_dir()
+        .ok()
+        .and_then(|cache| fs::canonicalize(cache.join("archives")).ok());
+    let resources =
+        resolve_relative_resource_paths(document_path, relative_paths, archive_cache.as_deref())?;
     let mut allowed = HashMap::new();
     for (source, path) in resources {
         allow_request(&app, &path)?;
@@ -869,21 +899,24 @@ mod tests {
     }
 
     #[test]
-    fn resolves_only_safe_relative_images_below_the_document_directory() {
+    fn resolves_relative_images_from_the_document_and_explicit_parent_directories() {
         let root = temp_root();
-        let article_dir = root.join("article");
+        let package_dir = root.join("package");
+        let article_dir = package_dir.join("article");
         let image_dir = article_dir.join("windows");
         fs::create_dir_all(&image_dir).unwrap();
         let markdown = article_dir.join("guide.md");
         let cover = article_dir.join("首页.jpg");
         let screenshot = image_dir.join("Windows-首页.png");
         let unsupported = article_dir.join("notes.txt");
-        let outside = root.join("outside.png");
+        let parent_image = package_dir.join("首页.jpg");
+        let ancestor_image = root.join("outside.png");
         fs::write(&markdown, b"# guide").unwrap();
         fs::write(&cover, b"jpg").unwrap();
         fs::write(&screenshot, b"png").unwrap();
         fs::write(&unsupported, b"text").unwrap();
-        fs::write(&outside, b"outside").unwrap();
+        fs::write(&parent_image, b"parent jpg").unwrap();
+        fs::write(&ancestor_image, b"ancestor png").unwrap();
 
         let resources = resolve_relative_resource_paths(
             &markdown,
@@ -891,17 +924,40 @@ mod tests {
                 "首页.jpg".to_string(),
                 "windows/Windows-首页.png".to_string(),
                 "notes.txt".to_string(),
-                "../outside.png".to_string(),
+                "../首页.jpg".to_string(),
+                "./../../outside.png".to_string(),
+                ancestor_image.to_string_lossy().into_owned(),
                 "missing.png".to_string(),
             ],
+            None,
         )
         .unwrap();
 
-        assert_eq!(resources.len(), 2);
+        assert_eq!(resources.len(), 4);
         assert_eq!(resources["首页.jpg"], fs::canonicalize(cover).unwrap());
         assert_eq!(
             resources["windows/Windows-首页.png"],
             fs::canonicalize(screenshot).unwrap()
+        );
+        assert_eq!(
+            resources["../首页.jpg"],
+            fs::canonicalize(parent_image).unwrap()
+        );
+        assert_eq!(
+            resources["./../../outside.png"],
+            fs::canonicalize(ancestor_image).unwrap()
+        );
+
+        let archive_cache = fs::canonicalize(&root).unwrap();
+        let archive_resources = resolve_relative_resource_paths(
+            &markdown,
+            vec!["首页.jpg".to_string(), "../首页.jpg".to_string()],
+            Some(&archive_cache),
+        )
+        .unwrap();
+        assert_eq!(
+            archive_resources.keys().collect::<Vec<_>>(),
+            vec!["首页.jpg"]
         );
 
         fs::remove_dir_all(root).unwrap();
@@ -916,10 +972,15 @@ mod tests {
         let promo = article_dir.join("LightPage-v1.5.2-promo.mp4");
         fs::write(&markdown, b"# article").unwrap();
         fs::write(&promo, b"mp4").unwrap();
+        fs::write(root.join("outside.mp4"), b"mp4").unwrap();
 
         let resources = resolve_relative_resource_paths(
             &markdown,
-            vec!["./LightPage-v1.5.2-promo.mp4".to_string()],
+            vec![
+                "./LightPage-v1.5.2-promo.mp4".to_string(),
+                "../outside.mp4".to_string(),
+            ],
+            None,
         )
         .unwrap();
 

@@ -18,7 +18,7 @@
 ## Markdown 本地图片
 
 - Windows 版会以 Markdown 文件所在目录为基准加载相对图片，例如 `![截图](images/demo.png)`。
-- 为避免 Markdown 越权读取其他目录，只允许当前文档同目录及其子目录中的 PNG、JPEG、GIF 和 WebP 图片。
+- Windows 上直接打开的 Markdown 支持通过 `../` 引用上级目录中的 PNG、JPEG、GIF 和 WebP 图片，例如 `![截图](../images/demo.png)`。
 - 单张图片最大 20 MB，每篇文档最多加载 64 张、合计不超过 64 MB；超出限制的图片会显示加载失败提示。
 
 ## 文件与导出

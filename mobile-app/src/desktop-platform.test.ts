@@ -271,6 +271,7 @@ describe('desktop platform adapter', () => {
         return {
           '首页.jpg': 'C:\\文章\\首页.jpg',
           'windows/Windows-首页.png': 'C:\\文章\\windows\\Windows-首页.png',
+          '../首页.jpg': 'C:\\首页.jpg',
         }
       }
       return []
@@ -285,16 +286,18 @@ describe('desktop platform adapter', () => {
 
     const resources = await platform.loadMarkdownResources(
       'C:\\文章\\使用说明.md',
-      '![首页](首页.jpg)\n![Windows](windows/Windows-首页.png)',
+      '![首页](首页.jpg)\n![Windows](windows/Windows-首页.png)\n![上级首页](../首页.jpg)',
     )
 
     expect(invokeMock).toHaveBeenCalledWith('resolve_relative_resources', {
       documentPath: 'C:\\文章\\使用说明.md',
-      relativePaths: ['首页.jpg', 'windows/Windows-首页.png'],
+      relativePaths: ['首页.jpg', 'windows/Windows-首页.png', '../首页.jpg'],
     })
     expect(resources['首页.jpg']).toMatch(/^data:image\/jpeg;base64,/)
     expect(resources['windows/windows-首页.png']).toMatch(/^data:image\/png;base64,/)
-    expect(readFile).toHaveBeenCalledTimes(2)
+    expect(resources['../首页.jpg']).toMatch(/^data:image\/jpeg;base64,/)
+    expect(readFile).toHaveBeenCalledWith('C:\\首页.jpg')
+    expect(readFile).toHaveBeenCalledTimes(3)
   })
 
   it('uses a stable case-insensitive identity for Windows paths', () => {

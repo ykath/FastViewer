@@ -136,6 +136,23 @@ describe('MarkdownReader', () => {
     })
   })
 
+  it('分别加载当前目录与上级目录的同名图片', () => {
+    const local = 'data:image/png;base64,AAAA'
+    const parent = 'data:image/png;base64,AQID'
+    render(
+      <MarkdownReader
+        content={'![当前目录](images/首页.png)\n\n![上级目录](../images/%E9%A6%96%E9%A1%B5.png)'}
+        documentPath="使用说明.md"
+        resources={{ 'images/首页.png': local, '../images/首页.png': parent }}
+        contentRef={createRef<HTMLElement>()}
+        themeMode="light"
+      />,
+    )
+
+    expect(screen.getByRole('img', { name: '当前目录' }).getAttribute('src')).toBe(local)
+    expect(screen.getByRole('img', { name: '上级目录' }).getAttribute('src')).toBe(parent)
+  })
+
   it('异步绘制多个 Mermaid 图表并使用唯一 ID 和严格安全配置', async () => {
     const { container } = render(
       <MarkdownReader

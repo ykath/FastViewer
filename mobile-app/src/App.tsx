@@ -54,6 +54,7 @@ import { BottomNav, CommandPalette, DirectoryBrowserPopover, LoadingState, OpenE
 import { HomePage } from './home/HomePage'
 import { ReaderPage } from './reader/ReaderPage'
 import { createNativeOpenQueue } from './app/native-open-queue'
+import { extractLocalMarkdownImageSources, normalizeResourceKey } from './markdown-media'
 
 const SettingsPage = lazy(() => import('./SettingsPage'))
 
@@ -304,14 +305,19 @@ function App() {
       && openedDocument.fileType === 'markdown'
       && !openedDocument.archiveStorageId
       && openedDocument.sourceUri
-      && !openedDocument.archiveResources
+      && (!openedDocument.archiveResources || extractLocalMarkdownImageSources(openedDocument.content).some((source) => {
+        const key = normalizeResourceKey(source)
+        return key.startsWith('../') && !openedDocument.archiveResources?.[key]
+      }))
     ) {
       void desktopPlatform.loadMarkdownResources(openedDocument.sourceUri, openedDocument.content)
         .then((resources) => {
           if (Object.keys(resources).length === 0) return
-          persistDocuments((items) =>
-            upsertDocument(items, { ...openedDocument, archiveResources: resources, lastOpenedAt: openedAt }),
-          )
+          persistDocuments((items) => items.map((item) => (
+            item.id === openedDocument.id && item.content === openedDocument.content
+              ? { ...item, archiveResources: { ...item.archiveResources, ...resources } }
+              : item
+          )))
         })
         .catch(() => undefined)
     }
@@ -368,7 +374,7 @@ function App() {
         const resources = await loadResources(result.content)
         if (Object.keys(resources).length > 0) archiveResources = resources
       } catch {
-        showToast('正文已打开，但同目录图片加载失败', 'warning')
+        showToast('正文已打开，但本地图片加载失败', 'warning')
       }
     }
 
